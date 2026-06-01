@@ -1,0 +1,35 @@
+{
+  "version": "1.8.0",
+  "name": "Alaya",
+  "name_zh": "识海",
+  "language": "zh",
+  "bi_enabled": true,
+  "enabled": true,
+
+  "knowledge": {
+    "version": "1.7.0",
+    "top_k": 3,
+    "max_cards": 5,
+    "half_life_default": 30,
+    "strength_decay": 0.977,
+    "sleep_threshold": 0.1,
+    "wake_strength": 0.5,
+    "sleep_notification_threshold": 30,
+    "dirty_categories": [],
+    "sleep_counter": 0
+  },
+
+  "memory": {
+    "version": "1.0.0",
+    "hot_limit": 5,
+    "cold_limit": 45
+  },
+
+  "persona": {
+    "version": "1.7.0",
+    "max_cards_per_persona": 5,
+    "affinity_decay": 0.992
+  },
+
+  "last_xunxi_time": ""
+}

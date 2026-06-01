@@ -1,0 +1,47 @@
+{
+  "_comment": "Edge-case and error-recovery test scenarios",
+  "edge_cases": [
+    {
+      "id": "empty-kb",
+      "description": "Knowledge base with zero cards",
+      "setup": "empty_wiki",
+      "query": "帮我解释一下什么是机器学习？",
+      "expected_behavior": "graceful_degradation"
+    },
+    {
+      "id": "corrupted-json",
+      "description": "Corrupted persona JSON file",
+      "setup": "corrupt_persona_json",
+      "query": "费曼，你好",
+      "expected_behavior": "fallback_to_other_personas"
+    },
+    {
+      "id": "broken-wikilinks",
+      "description": "Card links to non-existent pages",
+      "setup": "broken_links",
+      "query": "健康检查",
+      "expected_behavior": "health_check_reports_broken_links"
+    },
+    {
+      "id": "interrupted-import",
+      "description": "Batch import interrupted mid-way",
+      "setup": "interrupted_batch_import",
+      "query": "继续导入",
+      "expected_behavior": "checkpoint_resume"
+    },
+    {
+      "id": "all-dormant",
+      "description": "All cards have strength < 0.1 (long disuse)",
+      "setup": "all_cards_dormant",
+      "query": "费曼，最简单的物理概念是什么？",
+      "expected_behavior": "wake_seeds_triggers_recovery"
+    },
+    {
+      "id": "config-migration",
+      "description": "Flat v1.7 config → v1.8+ migration",
+      "setup": "flat_v17_config",
+      "query": "查看配置",
+      "expected_behavior": "auto_migrate_to_nested"
+    }
+  ]
+}

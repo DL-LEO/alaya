@@ -1,0 +1,268 @@
+# Alaya · Health Check (v1.8)
+# Checks three-layer knowledge network integrity:
+# Layer 1: wiki/index.md links, AUTO markers, cross-category bidirectionality
+# Layer 2: _category.md links, card existence, orphans
+# Layer 3: Card metadata coverage
+# Layer 4: Memory system (history files, ambient state)
+#
+# Usage: python scripts/health_check.py [wiki_dir] [alaya_dir]
+
+import json, os, re, sys
+from datetime import datetime
+
+SKIP_FILES = {'_category.md', 'index.md', 'log.md'}
+
+wiki_dir = sys.argv[1] if len(sys.argv) > 1 else 'wiki'
+alaya_dir = sys.argv[2] if len(sys.argv) > 2 else 'alaya'
+
+print('=' * 50)
+print('  Alaya · Health Check')
+print(f'  {datetime.now().strftime("%Y-%m-%d %H:%M")}')
+print('=' * 50)
+
+issues = []
+
+# 1. Persona check
+print(f'\n[1] Persona Configurations')
+manas_dir = os.path.join(alaya_dir, 'manas')
+if os.path.exists(manas_dir):
+    manas_files = [f for f in os.listdir(manas_dir) if f.endswith('.json')]
+    print(f'  Active personas: {len(manas_files)}')
+    for f in manas_files:
+        with open(os.path.join(manas_dir, f), 'r', encoding='utf-8') as fp:
+            try:
+                data = json.load(fp)
+                name = data.get('persona', f)
+                has_foci = 'interest_foci' in data.get('ego_vector', {})
+                print(f'    {name} — foci={has_foci}')
+            except json.JSONDecodeError:
+                issues.append(f'Corrupt JSON: {f}')
+else:
+    issues.append('manas/ directory not found')
+
+# 2. Layer 1 — index.md checks
+print(f'\n[2] Layer 1: index.md')
+index_path = os.path.join(wiki_dir, 'index.md')
+index_exists = os.path.exists(index_path)
+if index_exists:
+    with open(index_path, 'r', encoding='utf-8') as f:
+        index_content = f.read()
+
+    # Check AUTO markers
+    has_auto_start = '<!-- AUTO -->' in index_content
+    has_auto_end = '<!-- END-AUTO -->' in index_content
+    if not has_auto_start or not has_auto_end:
+        issues.append('index.md missing <!-- AUTO --> / <!-- END-AUTO --> markers')
+        print('  AUTO markers: MISSING')
+    else:
+        print('  AUTO markers: OK')
+
+    # Extract category links from index.md
+    cat_links = re.findall(r'\[\[([^\]]+?)/_category(?:\|[^\]]+)?\]\]', index_content)
+    missing_cats = []
+    for cat in cat_links:
+        cat_path = os.path.join(wiki_dir, cat)
+        cat_md = os.path.join(cat_path, '_category.md')
+        if not os.path.isdir(cat_path) or not os.path.exists(cat_md):
+            missing_cats.append(cat)
+    if missing_cats:
+        issues.append(f'index.md references missing categories: {missing_cats[:5]}')
+        for c in missing_cats[:5]:
+            print(f'  [broken] [[{c}/_category]]')
+    else:
+        print(f'  Category links: {len(cat_links)} OK')
+
+    # Check bidirectional cross-links
+    cross_links = re.findall(r'\[\[([^\]]+?)/_category[^\]]*\]\]\s*<->\s*\[\[([^\]]+?)/_category[^\]]*\]\]', index_content)
+    print(f'  Cross-category links: {len(cross_links)}')
+else:
+    issues.append('wiki/index.md not found — run build_index.py')
+    print('  index.md: NOT FOUND')
+
+# 3. Layer 2 — _category.md checks
+print(f'\n[3] Layer 2: Category Files')
+all_cards = {}       # card_name -> category
+card_files = set()   # all .md card paths
+orphan_cards = []
+
+if os.path.isdir(wiki_dir):
+    for entry in sorted(os.listdir(wiki_dir)):
+        cat_path = os.path.join(wiki_dir, entry)
+        if not os.path.isdir(cat_path):
+            continue
+
+        cat_md_path = os.path.join(cat_path, '_category.md')
+        if not os.path.exists(cat_md_path):
+            issues.append(f'Missing _category.md in: {entry}')
+            print(f'  [missing] {entry}/_category.md')
+            continue
+
+        with open(cat_md_path, 'r', encoding='utf-8') as f:
+            cat_content = f.read()
+
+        # Check AUTO markers
+        if '<!-- AUTO -->' not in cat_content or '<!-- END-AUTO -->' not in cat_content:
+            issues.append(f'{entry}/_category.md missing AUTO markers')
+
+        # Extract card links
+        linked_cards = re.findall(r'\[\[([^\]]+?)\]\]', cat_content)
+        broken = []
+        for card in linked_cards:
+            card_file = os.path.join(cat_path, card + '.md')
+            if not os.path.exists(card_file):
+                broken.append(card)
+        if broken:
+            issues.append(f'{entry}/_category.md broken links: {broken[:3]}')
+            for b in broken[:3]:
+                print(f'  [broken] {entry}/[[{b}]]')
+
+        # Track all cards in this category
+        for fname in os.listdir(cat_path):
+            if fname.endswith('.md') and fname not in SKIP_FILES:
+                card_name = fname[:-3]
+                all_cards[card_name] = entry
+                card_files.add(os.path.join(cat_path, fname))
+
+    print(f'  Categories scanned: {len(os.listdir(wiki_dir))}')
+    print(f'  Total cards: {len(all_cards)}')
+
+    # 4. Orphan check
+    print(f'\n[4] Orphan Cards')
+    linked_names = set()
+    for entry in os.listdir(wiki_dir):
+        cat_path = os.path.join(wiki_dir, entry)
+        if not os.path.isdir(cat_path):
+            continue
+        cat_md_path = os.path.join(cat_path, '_category.md')
+        if not os.path.exists(cat_md_path):
+            continue
+        with open(cat_md_path, 'r', encoding='utf-8') as f:
+            cat_content = f.read()
+        for link in re.findall(r'\[\[([^\]]+?)\]\]', cat_content):
+            linked_names.add(link)
+
+    for card_name, cat in all_cards.items():
+        if card_name not in linked_names:
+            orphan_cards.append(f'{cat}/{card_name}')
+
+    if orphan_cards:
+        issues.append(f'{len(orphan_cards)} orphan cards not in _category.md')
+        for o in orphan_cards[:5]:
+            print(f'  [orphan] {o}')
+    else:
+        print(f'  Orphans: none')
+
+# 5. Metadata coverage
+print(f'\n[5] Metadata Coverage')
+required_fields = ['seed_type', 'strength', 'last_activated']
+missing_meta = 0
+if os.path.isdir(wiki_dir):
+    for entry in os.listdir(wiki_dir):
+        cat_path = os.path.join(wiki_dir, entry)
+        if not os.path.isdir(cat_path):
+            continue
+        for fname in os.listdir(cat_path):
+            if not fname.endswith('.md') or fname in SKIP_FILES:
+                continue
+            fpath = os.path.join(cat_path, fname)
+            with open(fpath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            for field in required_fields:
+                if f'{field}:' not in content:
+                    missing_meta += 1
+                    break
+
+    if missing_meta:
+        issues.append(f'{missing_meta} cards missing required metadata — run build_index.py')
+    print(f'  Cards with full metadata: {len(all_cards) - missing_meta}/{len(all_cards)}')
+
+# 6. Dirty categories
+print(f'\n[6] Dirty Categories')
+config_path = os.path.join(alaya_dir, 'config.json')
+if os.path.exists(config_path):
+    with open(config_path, 'r', encoding='utf-8') as f:
+        cfg = json.load(f)
+    dirty = cfg.get('knowledge', {}).get('dirty_categories', [])
+    if dirty:
+        issues.append(f'{len(dirty)} categories need rebuild: {dirty}')
+        for d in dirty:
+            print(f'  [dirty] {d}')
+    else:
+        print('  None')
+else:
+    issues.append('config.json not found')
+
+# 7. Version + Config check
+print(f'\n[7] Configuration')
+if os.path.exists(config_path):
+    with open(config_path, 'r', encoding='utf-8') as f:
+        cfg = json.load(f)
+    print(f'  Version: {cfg.get("version", "unknown")}')
+    print(f'  Language: {cfg.get("language", "not set")}')
+    # Nested config (v1.8+) or flat (migrated)
+    kcfg = cfg.get('knowledge', {})
+    pcfg = cfg.get('persona', {})
+    mcfg = cfg.get('memory', {})
+    print(f'  Knowledge:')
+    print(f'    top_k: {kcfg.get("top_k", "not set")}')
+    print(f'    dirty_categories: {len(kcfg.get("dirty_categories", []))}')
+    print(f'    sleep_counter: {kcfg.get("sleep_counter", 0)}')
+    print(f'  Memory:')
+    print(f'    version: {mcfg.get("version", "not set")}')
+    print(f'    hot_limit: {mcfg.get("hot_limit", "not set")}')
+    print(f'  Persona:')
+    print(f'    max_cards_per_persona: {pcfg.get("max_cards_per_persona", "not set")}')
+    print(f'    affinity_decay: {pcfg.get("affinity_decay", "not set")}')
+
+# 8. Memory system check
+print(f'\n[8] Memory System')
+memory_dir = os.path.join(alaya_dir, 'memory')
+if os.path.exists(memory_dir):
+    history_files = [f for f in os.listdir(memory_dir) if f.endswith('_history.json')]
+    print(f'  History files: {len(history_files)}')
+    for hf in history_files:
+        hp = os.path.join(memory_dir, hf)
+        with open(hp, 'r', encoding='utf-8') as f:
+            hist = json.load(f)
+        hot = hist.get('hot', [])
+        cold = hist.get('cold', [])
+        has_mood = any(e.get('mood') for e in hot)
+        print(f'    {hf}: hot={len(hot)}, cold={len(cold)}, mood_tracked={has_mood}')
+    ambient_path = os.path.join(memory_dir, 'ambient.json')
+    if os.path.exists(ambient_path):
+        with open(ambient_path, 'r', encoding='utf-8') as f:
+            ambient = json.load(f)
+        mood = ambient.get("recent_mood", "")
+        attention = len(ambient.get("recent_attention", {}))
+        trajectory = len(ambient.get("mood_trajectory", []))
+        themes = ambient.get("recent_themes", "")
+        threads = len(ambient.get("open_threads", []))
+        style = ambient.get("user_style_notes", "")
+        print(f'  Ambient: mood="{mood}", trajectory={trajectory}, attention={attention}')
+        print(f'    themes={bool(themes)}, open_threads={threads}, style_notes={bool(style)}')
+
+        # Check for old-format ambient (missing semantic fields)
+        missing_fields = []
+        for field in ['mood_trajectory', 'recent_themes', 'open_threads', 'user_style_notes']:
+            if field not in ambient:
+                missing_fields.append(field)
+        if missing_fields:
+            issues.append(f'ambient.json missing fields: {missing_fields} — LLM will auto-init on first save')
+            for mf in missing_fields:
+                print(f'  [upgrade] ambient.json missing field: {mf}')
+    else:
+        print(f'  Ambient: not found')
+else:
+    print(f'  memory/ directory not found (will be created on first interaction)')
+
+# Summary
+print(f'\n' + '=' * 50)
+if issues:
+    print(f'  Issues found: {len(issues)}')
+    for i, issue in enumerate(issues, 1):
+        print(f'  {i}. {issue}')
+    print('  Run "build index" to fix index-related issues.')
+else:
+    print('  All checks passed!')
+print('=' * 50)
+sys.exit(1 if issues else 0)
