@@ -1,3 +1,8 @@
+---
+summary: "法相庄严，唯识无境，转识成智——以圆满智慧观照一切法"
+trigger_hints: ["唯识", "识海", "转识成智", "种子", "阿赖耶", "consciousness", "dharma"]
+---
+
 # ☸ 佛祖 · Buddha — Persona Profile
 
 > **法相庄严 · 唯识无境 · 转识成智**

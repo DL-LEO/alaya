@@ -57,7 +57,8 @@ def _ensure_ambient_fields(ambient):
         "mood_trajectory": [],
         "recent_themes": "",
         "open_threads": [],
-        "user_style_notes": ""
+        "user_style_notes": "",
+        "save_prompt_count": 0
     }
     for key, default in defaults.items():
         if key not in ambient:

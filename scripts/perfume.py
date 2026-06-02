@@ -29,8 +29,9 @@ def _today_str() -> str:
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from perfume_knowledge import boost_cards, decay_all, wake_seeds, sleep_check as check_sleep
-from perfume_memory import update_ambient, migrate_from_manas, write_history
+from perfume_memory import update_ambient, migrate_from_manas, write_history, _ensure_ambient_fields
 from perfume_persona import update_affinity, decay_affinity
+import bi_observer
 
 
 def parse_args():
@@ -40,7 +41,9 @@ def parse_args():
         "topic": None, "turns": 0, "tags": [],
         "mood": "", "summary": "",
         "sleep_check": False, "wake": None,
-        "alaya_dir": "alaya", "wiki_dir": "wiki"
+        "alaya_dir": "alaya", "wiki_dir": "wiki",
+        "ambient": None, "history": None,
+        "affinity_increment": 0.01
     }
 
     i = 0
@@ -48,11 +51,15 @@ def parse_args():
         if args[i] == "--level":
             i += 1
             if i < len(args):
-                try:
-                    result["level"] = int(args[i])
-                except ValueError:
-                    print(f"Invalid level: {args[i]}")
-                    sys.exit(1)
+                val = args[i]
+                if val == "save":
+                    result["level"] = "save"
+                else:
+                    try:
+                        result["level"] = int(val)
+                    except ValueError:
+                        print(f"Invalid level: {val}")
+                        sys.exit(1)
         elif args[i] == "--cards":
             i += 1
             if i < len(args) and not args[i].startswith("--"):
@@ -81,6 +88,12 @@ def parse_args():
         elif args[i] == "--summary":
             i += 1
             result["summary"] = args[i] if i < len(args) else ""
+        elif args[i] == "--ambient":
+            i += 1
+            result["ambient"] = args[i] if i < len(args) else None
+        elif args[i] == "--history":
+            i += 1
+            result["history"] = args[i] if i < len(args) else None
         elif args[i] == "--alaya":
             i += 1
             result["alaya_dir"] = args[i] if i < len(args) else result["alaya_dir"]
@@ -92,6 +105,14 @@ def parse_args():
         elif args[i] == "--wake":
             i += 1
             result["wake"] = args[i] if i < len(args) else None
+        elif args[i] == "--affinity-increment":
+            i += 1
+            if i < len(args):
+                try:
+                    result["affinity_increment"] = float(args[i])
+                except ValueError:
+                    print(f"Invalid affinity increment: {args[i]}")
+                    sys.exit(1)
         else:
             if result["alaya_dir"] == "alaya":
                 result["alaya_dir"] = args[i]
@@ -163,6 +184,70 @@ def save_config(alaya_dir, config):
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
+# ── Reminder frequency control ──────────────────────────────────────
+
+def _filter_by_reminder_tracking(items, config, today_str):
+    """Filter health items so the same reminder isn't over-shown.
+
+    Rules:
+      - Never shown before → show
+      - Shown <1 day ago  → skip (24h quiet)
+      - Shown <7 days ago and already shown ≥3 times → skip
+      - Otherwise → show
+    """
+    tracking = config.get("reminder_tracking", {})
+    filtered = []
+
+    for item in items:
+        key = item["type"]
+        entry = tracking.get(key, {"last_shown": None, "count": 0})
+
+        if entry.get("last_shown") is None:
+            filtered.append(item)
+            continue
+
+        try:
+            last = datetime.strptime(entry["last_shown"], "%Y-%m-%d")
+            today = datetime.strptime(today_str, "%Y-%m-%d")
+            days_since = (today - last).days
+        except (ValueError, TypeError):
+            days_since = 999
+
+        if days_since < 1:
+            continue
+        if 1 <= days_since < 7 and entry.get("count", 0) >= 3:
+            continue
+
+        filtered.append(item)
+
+    return filtered
+
+
+def _update_reminder_tracking(items, config, today_str):
+    """Update reminder tracking after items have been shown."""
+    tracking = config.get("reminder_tracking", {})
+
+    for item in items:
+        key = item["type"]
+        entry = tracking.get(key, {"last_shown": None, "count": 0})
+
+        # Reset count if >7 days since last show
+        if entry.get("last_shown") is not None:
+            try:
+                last = datetime.strptime(entry["last_shown"], "%Y-%m-%d")
+                today = datetime.strptime(today_str, "%Y-%m-%d")
+                if (today - last).days >= 7:
+                    entry["count"] = 0
+            except (ValueError, TypeError):
+                pass
+
+        entry["last_shown"] = today_str
+        entry["count"] = entry.get("count", 0) + 1
+        tracking[key] = entry
+
+    config["reminder_tracking"] = tracking
+
+
 def _sub(config, system):
     """Get subsystem config dict."""
     return config.get(system, {})
@@ -183,9 +268,11 @@ def level_1(alaya_dir, wiki_dir, args, config):
         kcfg["dirty_categories"] = dirty
 
     # Persona: update affinity (mechanical increment, auto)
+    # --affinity-increment controls the scenario:
+    #   0.01 (default) = co-chat; 0.02 = same card cited; 0.03 = cite peer's seed
     if args["persona"]:
         manas_dir = os.path.join(alaya_dir, "manas")
-        update_affinity(manas_dir, args["persona"])
+        update_affinity(manas_dir, args["persona"], args.get("affinity_increment", 0.01))
 
     # Memory: write persona history stub (mechanical layer)
     if args["persona"]:
@@ -260,6 +347,189 @@ def level_3(alaya_dir, wiki_dir, config):
     level_2(alaya_dir, wiki_dir, config)
 
 
+def level_save(alaya_dir, wiki_dir, args, config):
+    """--level save: Atomic session-boundary save for Steps 3-5 of the protocol.
+
+    Takes structured semantic fields (--ambient JSON) and optional persona history
+    (--history JSON), writes both, runs BI observer, and marks protocol checklist.
+    Designed to replace three manual LLM steps with one script call.
+    """
+    today = _today_str()
+    persona = args.get("persona")
+    if not persona:
+        print("Error: --persona is required for --level save")
+        sys.exit(1)
+
+    memory_dir = os.path.join(alaya_dir, "memory")
+    os.makedirs(memory_dir, exist_ok=True)
+
+    # ---- Step 3: Write ambient.json semantic fields ----
+    ambient_json = args.get("ambient")
+    ambient_path = os.path.join(memory_dir, "ambient.json")
+    existing = {}
+    if os.path.exists(ambient_path):
+        try:
+            with open(ambient_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    if ambient_json:
+        try:
+            semantic = json.loads(ambient_json)
+        except json.JSONDecodeError as e:
+            print(f"Error: --ambient is not valid JSON: {e}")
+            sys.exit(1)
+
+        # Merge semantic fields into existing (preserving mechanical fields)
+        existing["recent_themes"] = semantic.get("recent_themes", existing.get("recent_themes", ""))
+        existing["open_threads"] = semantic.get("open_threads", existing.get("open_threads", []))
+        existing["user_style_notes"] = semantic.get("user_style_notes", existing.get("user_style_notes", ""))
+        existing = _ensure_ambient_fields(existing)
+
+        with open(ambient_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+        print(f"  [Step 3] Ambient semantic fields written")
+    else:
+        print(f"  [Step 3] --ambient not provided, skipping semantic fields")
+
+    # ---- Step 4: Write persona history ----
+    history_json = args.get("history")
+    hl = config.get("memory", {}).get("hot_limit", 5)
+    cl = config.get("memory", {}).get("cold_limit", 45)
+
+    if history_json:
+        try:
+            entry = json.loads(history_json)
+        except json.JSONDecodeError as e:
+            print(f"Error: --history is not valid JSON: {e}")
+            sys.exit(1)
+
+        write_history(memory_dir, persona, entry, hot_limit=hl, cold_limit=cl)
+        print(f"  [Step 4] History written for '{persona}'")
+    else:
+        # Minimal fallback entry
+        entry = {
+            "date": today,
+            "topic": args.get("topic") or "session-end",
+            "tags": args.get("tags", []),
+            "mood": args.get("mood", ""),
+            "summary": args.get("summary", "Session end — automatic save"),
+            "key_insights": [],
+            "cards_cited": args.get("cards", []),
+            "turns": args.get("turns", 0),
+        }
+        write_history(memory_dir, persona, entry, hot_limit=hl, cold_limit=cl)
+        print(f"  [Step 4] Minimal history written for '{persona}'")
+
+    # ---- Step 5: BI Observer pass + System health ----
+    try:
+        obs = bi_observer.observe(alaya_dir)
+        findings = []
+
+        for d in obs.get("dormant", []):
+            findings.append({
+                "type": "dormant_persona",
+                "persona": d["persona"],
+                "detail": f"{d['days_since_last']}d inactive — interests: {', '.join(d['interest_foci'][:3])}"
+            })
+
+        for kg in obs.get("knowledge_gaps", []):
+            if kg["issue"] == "no_category":
+                findings.append({
+                    "type": "knowledge_gap",
+                    "interest": kg["interest_area"],
+                    "detail": f"No wiki category matches '{kg['interest_area']}'"
+                })
+            else:
+                cats = ", ".join(kg.get("categories", []))
+                findings.append({
+                    "type": "knowledge_gap_thin",
+                    "interest": kg["interest_area"],
+                    "detail": f"Thin categories: {cats}"
+                })
+
+        for an in obs.get("affinity_network", []):
+            if an["trend"] == "asymmetric":
+                findings.append({
+                    "type": "affinity_asymmetry",
+                    "pair": f"{an['pair'][0]} / {an['pair'][1]}",
+                    "detail": f"Scores: {an['scores'][0]} vs {an['scores'][1]}"
+                })
+
+        # System health check
+        health_items = bi_observer.check_health(alaya_dir, wiki_dir, config)
+        health_items = _filter_by_reminder_tracking(health_items, config, today)
+        if health_items:
+            _update_reminder_tracking(health_items, config, today)
+            save_config(alaya_dir, config)
+
+        # Write bi_notes.json
+        bi_notes_path = os.path.join(alaya_dir, "bi_notes.json")
+        existing_notes = []
+        if os.path.exists(bi_notes_path):
+            try:
+                with open(bi_notes_path, "r", encoding="utf-8") as f:
+                    existing_notes = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                pass
+
+        record = {"date": today, "persona": persona}
+        if findings:
+            record["findings"] = findings
+        if health_items:
+            record["system_health"] = health_items
+
+        existing_notes.append(record)
+        existing_notes = existing_notes[-20:]
+        with open(bi_notes_path, "w", encoding="utf-8") as f:
+            json.dump(existing_notes, f, ensure_ascii=False, indent=2)
+
+        # Print summary
+        parts = []
+        if findings:
+            parts.append(f"{len(findings)} observation(s)")
+        if health_items:
+            parts.append(f"{len(health_items)} health item(s)")
+        msg = "; ".join(parts) if parts else "no notable patterns"
+        print(f"  [Step 5] BI observer: {msg}")
+
+        # Print health reminders in user-friendly format
+        if health_items:
+            high_count = sum(1 for h in health_items if h.get("severity") == "high")
+            marker = "⚠️" if high_count else "📋"
+            print(f"  {marker} alaya系统提醒您：")
+            for item in health_items:
+                print(f"    • {item['detail']}")
+                print(f"      → {item['suggestion']}")
+
+    except Exception as e:
+        print(f"  [Step 5] BI observer note: {e}")
+
+    # ---- Protocol checklist ----
+    checklist_path = os.path.join(alaya_dir, "_protocol_checklist.json")
+    checklist = {}
+    if os.path.exists(checklist_path):
+        try:
+            with open(checklist_path, "r", encoding="utf-8") as f:
+                checklist = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    checklist[today] = {
+        "ambient_written": bool(ambient_json),
+        "history_written": True,
+        "bi_observed": True,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "persona": persona
+    }
+    with open(checklist_path, "w", encoding="utf-8") as f:
+        json.dump(checklist, f, ensure_ascii=False, indent=2)
+
+    print(f"\n[OK] Session boundary save complete for '{persona}'")
+    print(f"  ambient: {'OK' if ambient_json else '--'} | history: OK | bi: OK")
+
+
 if __name__ == "__main__":
     args = parse_args()
     config = load_config(args["alaya_dir"])
@@ -291,12 +561,23 @@ if __name__ == "__main__":
         level_2(args["alaya_dir"], args["wiki_dir"], config)
     elif args["level"] == 3:
         level_3(args["alaya_dir"], args["wiki_dir"], config)
-    else:
+    elif args["level"] == "save":
+        level_save(args["alaya_dir"], args["wiki_dir"], args, config)
+    elif args["level"] in ("--help", "-h", "help"):
         print("Usage:")
         print("  python scripts/perfume.py --level 1 --cards c1.md,c2.md [--persona Name]")
         print("    [--mood \"开心\"] [--tags tag1,tag2] --alaya DIR --wiki DIR")
         print("  python scripts/perfume.py --level 2 --alaya DIR --wiki DIR")
         print("  python scripts/perfume.py --level 3 --alaya DIR --wiki DIR")
+        print("  python scripts/perfume.py --level save --persona Name")
+        print("    [--ambient '{\"recent_themes\":\"...\",\"open_threads\":[...]}']")
+        print("    [--history '{\"topic\":\"...\",\"tags\":[...],\"summary\":\"...\",\"key_insights\":[...]}']")
+        print("    [--cards c1,c2] [--mood \"开心\"] [--tags t1,t2] --alaya DIR --wiki DIR")
         print("  python scripts/perfume.py --sleep-check --alaya DIR")
         print("  python scripts/perfume.py --wake \"keyword\" --alaya DIR --wiki DIR")
+        print("  python scripts/perfume.py --help")
+        sys.exit(0)
+    else:
+        print(f"Unknown level: {args['level']}")
+        print("Run 'python scripts/perfume.py --help' for usage.")
         sys.exit(1)

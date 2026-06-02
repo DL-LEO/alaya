@@ -1,15 +1,15 @@
 # Knowledge Index
-Generated: 2026-06-01
 
 <!-- AUTO -->
 ## Categories
 
-| Category | Core | Peripheral | Total |
-|:--|--:|--:|--:|
-| [[ai-fundamentals/_category|ai-fundamentals]] | 1 | 1 | 2 |
-| [[deep-learning/_category|deep-learning]] | 2 | 0 | 2 |
+- [[deep-learning/deep-learning_category|deep-learning]]
+  本类别聚焦于 deep-learning、attention、transformer、neural-networks 等领域，包含 7 张知识卡片。
 
-## Concept Network
+- [[cognitive-science/cognitive-science_category|cognitive-science]]
+  本类别聚焦于 cognitive-science、attention、consciousness 等领域，包含 3 张知识卡片。
 
-- [[ai-fundamentals/_category|ai-fundamentals]] <-> [[deep-learning/_category|deep-learning]] (shared: ai, deep-learning, neural-networks)
+- [[philosophy/philosophy_category|philosophy]]
+  本类别聚焦于 philosophy、consciousness、attention 等领域，包含 1 张知识卡片。
+
 <!-- END-AUTO -->

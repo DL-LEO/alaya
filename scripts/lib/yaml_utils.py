@@ -106,13 +106,22 @@ def slugify(name):
     return s or 'untitled'
 
 
+def is_category_file(fname):
+    """Check if a filename is a category file: {name}_category.md"""
+    return fname.endswith('_category.md')
+
+
+def category_file_for(cat_slug):
+    """Return the category filename for a given category slug."""
+    return f'{cat_slug}_category.md'
+
+
 def get_all_cards(wiki_dir):
     """Walk wiki/{category}/*.md and return [(category, card_name, fpath)].
 
-    Skips _category.md, index.md, log.md and non-directory entries.
+    Skips category files, index.md, log.md and non-directory entries.
     Category is the subfolder name (e.g. 'deep-learning').
     """
-    skip = {'_category.md', 'index.md', 'log.md'}
     cards = []
     if not os.path.isdir(wiki_dir):
         return cards
@@ -121,7 +130,7 @@ def get_all_cards(wiki_dir):
         if not os.path.isdir(cat_path):
             continue
         for fname in sorted(os.listdir(cat_path)):
-            if fname.endswith('.md') and fname not in skip:
+            if fname.endswith('.md') and fname != 'index.md' and fname != 'log.md' and not is_category_file(fname):
                 card_name = fname[:-3]
                 cards.append((entry, card_name, os.path.join(cat_path, fname)))
     return cards
@@ -140,6 +149,57 @@ def find_card(wiki_dir, card_name):
         if os.path.exists(candidate):
             return candidate
     return None
+
+
+def get_description(yaml_str):
+    """Extract description field from YAML frontmatter. Returns str or None."""
+    return get_field(yaml_str, 'description')
+
+
+def set_description(yaml_str, description):
+    """Set description field in YAML frontmatter. Returns updated yaml_str."""
+    return set_field(yaml_str, 'description', description)
+
+
+def extract_description_from_body(body_text, max_length=120):
+    """Extract a one-line description from card body text.
+
+    Tries: 1) first blockquote line, 2) first non-empty non-heading paragraph.
+    Returns empty string if nothing usable found.
+
+    Args:
+        body_text: The full body text of a card.
+        max_length: Maximum character length for the extracted description (default 120).
+    """
+    lines = body_text.split('\n')
+
+    # Try blockquote
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('> '):
+            desc = stripped[2:].strip()
+            if len(desc) > 10:
+                return desc[:max_length]
+
+    # Try first non-heading, non-empty paragraph
+    para_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            if para_lines:
+                desc = ' '.join(para_lines)
+                if len(desc) > 10:
+                    return desc[:max_length]
+                para_lines = []
+            continue
+        para_lines.append(stripped)
+
+    if para_lines:
+        desc = ' '.join(para_lines)
+        if len(desc) > 10:
+            return desc[:max_length]
+
+    return ''
 
 
 def get_tags(yaml_str):

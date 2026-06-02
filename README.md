@@ -1,9 +1,12 @@
 # Alaya · 识海
 
-> **Personified Multi-Role Knowledge Memory System**
+> **Personified Multi-Role Knowledge Memory System** · v2.0.0
 > **拟人多角色知识库记忆系统**
+>
+> *Description-driven retrieval. One knowledge base, many perspectives.*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](CHANGELOG.md)
 
 ---
 
@@ -173,24 +176,25 @@ Create your own: **"Create a new persona, interview me"** — the system walks y
 
 ## Architecture
 
-### Three-Layer Knowledge Graph
+### Description-Driven Knowledge Graph
 
-Alaya organizes knowledge in three interconnected layers, all using `[[wikilinks]]` — fully visible in Obsidian's graph view:
+Alaya organizes knowledge in three layers, all using `[[wikilinks]]` — fully visible in Obsidian's graph view:
 
 ```
-Layer 1 · wiki/index.md
-  Category overview + cross-category Concept Network
-  (auto-generated from card tag overlap, ≥2 shared tags = link)
+Layer 1 · wiki/index.md (~1-2KB)
+  Category wikilinks + description paragraphs
+  LLM reads this to match user questions against categories
 
-Layer 2 · wiki/{category}/_category.md
-  Card list (Core/Peripheral/Dormant) + Card Relations
-  (auto-generated from card tag overlap, ≥30% overlap = link)
+Layer 2 · wiki/{category}/{category}_category.md
+  Category header description + ## Cards (name + one-line description per card)
+  LLM reads only the ## Cards section (~1KB/10 cards) to build candidate pool
 
 Layer 3 · wiki/{category}/*.md
-  Individual knowledge cards (leaf nodes)
+  Individual knowledge cards with description field in YAML frontmatter
+  Full content loaded only for persona-selected cards in Tier 3
 ```
 
-The Concept Network connects categories that share knowledge domains. Card Relations connect individual cards within a category. Together they form a living knowledge graph that grows as you add and use knowledge.
+**v2.0**: No explicit graph edges, no tag-overlap computation. The descriptions themselves form the "graph" — LLM semantic matching naturally discovers connections that explicit links would miss. Cross-category relationships are expressed in prose within descriptions ("与认知科学在注意力概念上交叉").
 
 ### File Structure
 
@@ -199,18 +203,38 @@ The Concept Network connects categories that share knowledge domains. Card Relat
 ```
 alaya-pkg/
 ├── SKILL.md              ← Agent instruction file (the brain)
+├── README.md
+├── CHANGELOG.md
+├── LICENSE               ← MIT
+├── .gitignore
+├── requirements.txt
 ├── config/
 │   └── default_config.json
-├── manas/                ← Default persona templates (copied to runtime on setup)
+├── manas/                ← 8 default persona templates (copied to runtime on setup)
+│   ├── feynman.json / feynman_profile.md
+│   ├── buddha.json / buddha_profile.md
+│   └── ... (8 personas total)
 ├── scripts/              ← Python utilities (called by Agent)
-│   ├── build_index.py    ← Three-layer knowledge graph builder
-│   ├── batch_import.py   ← Batch file import (MD/PDF/TXT)
-│   ├── perfume.py        ← Xunxi (cultivation) engine
-│   ├── health_check.py   ← Three-layer network integrity check
-│   └── lib/yaml_utils.py ← Shared YAML module
+│   ├── build_index.py    ← Two-layer index builder + description extraction
+│   ├── perfume.py        ← Xunxi (cultivation) orchestrator
+│   ├── perfume_knowledge.py  ← Knowledge subsystem
+│   ├── perfume_memory.py     ← Memory subsystem
+│   ├── perfume_persona.py    ← Persona subsystem
+│   ├── setup_wizard.py   ← Interview-style config wizard
+│   ├── import_paper.py   ← Two-mode paper import (info/full)
+│   ├── batch_import.py   ← Batch file import (MD/PDF/TXT) + checkpoint
+│   ├── health_check.py   ← Two-layer network integrity check
+│   ├── fix_links.py      ← Wiki-link case fixer
+│   ├── bi_observer.py    ← BI passive health observer
+│   └── lib/
+│       ├── yaml_utils.py       ← YAML frontmatter + description helpers
+│       └── format_converter.py ← Zero-dependency format conversion
 ├── templates/
 │   ├── persona_template.json
-│   └── persona_profile_template.md
+│   ├── persona_profile_template.md
+│   ├── paper_summary.md
+│   ├── news_summary.md
+│   └── other_summary.md
 ├── docs/
 │   ├── quick-start.md
 │   └── role-guide.md
@@ -223,20 +247,24 @@ alaya-pkg/
 ```
 {your-kb}/
 ├── wiki/                 ← Knowledge cards organized by category
-│   ├── index.md          ← Layer 1: category overview + concept network
+│   ├── index.md          ← Layer 1: category wikilinks + description paragraphs
 │   ├── deep-learning/    ← Category subfolder
-│   │   ├── _category.md  ← Layer 2: card list + card relations
+│   │   ├── deep-learning_category.md  ← Layer 2: header description + ## Cards
 │   │   ├── Transformer-Architecture.md  ← Layer 3: knowledge card
 │   │   └── Neural-Networks.md
 │   └── philosophy/
-│       ├── _category.md
+│       ├── philosophy_category.md
 │       └── Consciousness-Theory.md
 └── alaya/                ← Runtime system files
-    ├── config.json       ← System configuration
-    ├── manas/            ← Working copies of persona configs
-    │   ├── feynman.json
-    │   └── feynman_profile.md
-    └── .index_metadata.json  ← Incremental build timestamps
+    ├── config.json       ← System configuration (3-system partitioned)
+    ├── .index_metadata.json  ← Build timestamps + stale description tracking
+    ├── memory/           ← Memory System
+    │   ├── {persona}_history.json  ← Per-persona interaction history (hot/cold)
+    │   ├── ambient.json            ← Shared mood + attention state
+    │   └── bi_notes.json           ← BI observation log
+    └── manas/            ← Persona System
+        ├── feynman.json / feynman_profile.md
+        └── ...
 ```
 
 ### Knowledge Card Format
@@ -252,6 +280,7 @@ last_activated: 2026-05-31
 activation_count: 0
 half_life: 30
 tags: [deep-learning, transformer, attention]
+description: "Transformer 架构通过自注意力机制实现了序列到序列的高效建模。"
 ---
 
 # Transformer Architecture
@@ -263,14 +292,14 @@ Your knowledge content here...
 
 | Mechanism | What It Does |
 |:--|:--|
-| **Three-layer knowledge graph** | `wiki/index.md` → `_category.md` → card content. Question-driven retrieval replaces full-text search. |
-| **Concept Network** | Auto-generated cross-category links from tag overlap. Visible in Obsidian's graph view. |
-| **Card Relations** | Auto-generated intra-category links. Knowledge connections emerge without manual effort. |
+| **Description-driven retrieval** | `wiki/index.md` → `{cat}_category.md` → card content. LLM semantic matching replaces explicit graph edges and tag computation. |
+| **Card descriptions** | Every card has a `description:` field in YAML frontmatter. Auto-extracted from body on build; LLM-written at card creation. Enables efficient Tier 2 matching without loading full card content. |
+| **Category headers** | Auto-generated 3-segment Chinese overview (100-200字). LLM-refinable via natural language ("更新类别描述"). Stored in `<!-- AUTO -->` blocks. |
 | **Persona profiles** | Each persona has a JSON config + Markdown character bible (core traits, speech habits, dialogue examples). |
-| **Xunxi (cultivation)** | Seeds grow when cited (+0.03 strength), decay when unused (0.977/day). Personas update affinity. |
+| **Xunxi (cultivation)** | Seeds grow when cited (+0.03 strength), decay when unused (0.977/day). Personas update affinity. Session-boundary batched execution. |
 | **Sleep & wake** | After ~67 days unused, seeds go dormant. You get notified. Mention the topic → seed reactivates at 0.5. |
 | **Two-seal method** | Source seal (where did this come from?) + Consensus seal (do multiple personas agree?) = quality gate. |
-| **BI Observer** | Optional. Watches persona behavior, detects trends, reports — no scoring, no ranking. |
+| **BI Observer** | 7-domain passive observation. Hitchhikes on existing script runs. No scoring, no ranking, no intervention. |
 
 ---
 
@@ -281,12 +310,16 @@ You interact with Alaya entirely through conversation:
 | You Say | What Happens |
 |:--|:--|
 | "alaya init" / "启用识海" | First-time setup |
-| "build index" / "构建索引" | Build three-layer knowledge graph |
+| "build index" / "构建索引" | Build two-layer index + extract descriptions |
 | "batch import {path}" / "批量导入" | Import files (MD/PDF/TXT) into wiki |
 | "import paper [url]" / "导入论文" | Import from arXiv |
 | "run xunxi" / "运行熏习" | Force full cultivation cycle |
-| "health check" / "健康检查" | Check three-layer network integrity |
-| "create persona" / "创建角色" | Interactive persona builder |
+| "health check" / "健康检查" | Check two-layer network integrity |
+| "补充卡片描述" / "补描述" | Auto-extract missing card descriptions |
+| "更新类别描述" | LLM regenerates category headers (100-200字, 3-segment) |
+| "更新索引描述" | LLM regenerates index.md entries (150-300字/category) |
+| "审视分类结构" | BI checks category proliferation → suggests merges |
+| "create persona" / "创建角色" | Interactive 7-phase persona distillation |
 | "show config" / "查看配置" | Display current settings |
 | "change top_K to 5" | Adjust retrieval depth |
 | "BI report" / "BI观察" | Generate observation report |
@@ -407,24 +440,25 @@ In Yogacara Buddhism, the transformation of the Eight Consciousnesses into the F
 
 ---
 
-### 三层知识图谱
+### 描述驱动知识图谱
 
 识海用三层互联的知识图谱组织知识，全部使用 `[[wikilinks]]`，在 Obsidian 图谱中完全可见：
 
 ```
-Layer 1 · wiki/index.md
-  分类概览 + 跨分类概念网络
-  （从卡片标签重叠自动生成，≥2 共享标签 = 链接）
+Layer 1 · wiki/index.md (~1-2KB)
+  分类 wikilinks + 描述段落
+  LLM 读取此文件，将用户问题与分类名称和描述进行语义匹配
 
-Layer 2 · wiki/{分类}/_category.md
-  卡片列表（核心/外围/休眠）+ 卡片关系
-  （从卡片标签重叠自动生成，≥30% 重叠 = 链接）
+Layer 2 · wiki/{分类}/{分类}_category.md
+  分类头部描述 + ## Cards（卡片名 + 一行描述）
+  LLM 只读 ## Cards 区域（~1KB/10 张卡片）来构建候选池
 
 Layer 3 · wiki/{分类}/*.md
-  具体知识卡片（叶子节点）
+  具体知识卡片，YAML frontmatter 含 description 字段
+  全文仅在 Tier 3 角色选中后加载
 ```
 
-概念网络连接共享知识领域的分类。卡片关系连接同一分类内的卡片。它们共同构成了随知识增长而生长的活知识图谱。
+**v2.0**：不再构建显式图边和标签交迭计算。描述文本本身就是"图谱"——LLM 语义匹配自然发现显式链接会遗漏的关联。跨分类关系在描述中以散文表达（"与认知科学在注意力概念上交叉"）。
 
 ---
 
@@ -482,11 +516,15 @@ Agent：🏛️ "但'to attend'到底是什么意思？让我们追问……"
 | 你说 | 发生什么 |
 |:--|:--|
 | "启用识海" | 首次设置 |
-| "构建索引" | 构建三层知识图谱 |
+| "构建索引" | 构建两层索引 + 提取描述 |
 | "批量导入 {路径}" | 批量导入文件（MD/PDF/TXT） |
 | "导入论文 [URL]" | 从 arXiv 导入 |
 | "运行熏习" | 强制完整熏习循环 |
-| "健康检查" | 检查三层网络完整性 |
+| "健康检查" | 检查两层网络完整性 |
+| "补充卡片描述" | 自动提取缺失的卡片描述 |
+| "更新类别描述" | LLM 重新生成类别头部（100-200字，三段式） |
+| "更新索引描述" | LLM 重新生成 index.md 条目（150-300字/类别） |
+| "审视分类结构" | BI 检查分类过度分裂 → 建议合并 |
 | "创建角色" | 7 阶段角色蒸馏 |
 | "查看配置" | 显示当前设置 |
 | "把 top_K 改成 5" | 调整检索深度 |

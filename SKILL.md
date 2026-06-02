@@ -2,7 +2,7 @@
 name: Alaya
 name_zh: 识海
 description: "Personified multi-role knowledge memory system. Shared knowledge base, each persona sees it differently."
-version: 1.8.0
+version: 2.0.0
 author: Liang Shao
 license: MIT
 compatibility:
@@ -39,6 +39,7 @@ When a user asks to install Alaya (e.g. "install this skill", "帮我安装这�
 2. Read {target_dir}/SKILL.md into context — this IS the skill definition
 3. Follow the "First Launch Detection" protocol below to complete setup
 4. Inform user: "Alaya installed. Say 'alaya init' to configure your knowledge base."
+   (setup_wizard.py will auto-save your knowledge base path to ~/.alaya_path for future sessions.)
 ```
 
 For **Claude Code**: copy or symlink SKILL.md into the project's `.claude/` or add a reference in `CLAUDE.md`.
@@ -48,17 +49,21 @@ For **Cursor / Codex**: include SKILL.md in `.cursorrules` or project context co
 | User Says | Agent Action |
 |:--|:--|
 | "alaya init" / "alaya setup" / "启用识海" / "初始化识海" | First-launch setup (see section below) |
-| "build index" / "构建索引" / "rebuild index" | Run `python scripts/build_index.py` |
+| "build index" / "构建索引" / "rebuild index" | Run `python scripts/build_index.py --full` |
 | "run xunxi" / "运行熏习" | Run `python scripts/perfume.py --level 2` |
 | "health check" / "健康检查" | Run `python scripts/health_check.py` |
 | "fix links" / "修复链接" | Run `python scripts/fix_links.py` |
+| "补充卡片描述" | Run `python scripts/build_index.py --full` (generates missing descriptions) |
+| "更新类别描述" | Agent reads all card descriptions in target categories → LLM generates refined headers (100-200字, 3-segment structure) → writes to `<!-- AUTO -->` block in `{cat}_category.md` |
+| "更新索引描述" | Agent reads all category headers → LLM generates refined index entries (150-300字 per category) → writes to `<!-- AUTO -->` block in `wiki/index.md` |
+| "审视分类结构" | BI observes category proliferation → Agent suggests merge candidates |
 | "show config" / "查看配置" | Read and display `alaya/config.json` |
 | "change top_K to N" / "修改top_K" | Update `alaya/config.json` field |
 | "disable BI" / "关闭BI" | Update `alaya/config.json` → bi_enabled: false |
 | "create persona" / "创建角色" / "蒸馏角色" / "distill persona" | Persona Creation Protocol (7-phase distillation) |
 | "clone {name}" / "克隆角色" | Clone persona JSON + profile.md then customize |
 | "delete persona {name}" / "删除角色" | Delete persona JSON + profile.md from manas/ |
-| "import paper {url}" / "导入论文" | Run `python scripts/import_paper.py {url}` |
+| "import paper {url}" / "导入论文" | Two-mode import (see Paper Import Workflow below) |
 | "batch import {path}" / "批量导入" / "import {path}" | Run `python scripts/batch_import.py {path}` |
 | "BI report" / "BI观察" / "天道观察" | Run `python scripts/bi_observer.py` for pattern observation |
 | "enable Alaya" / "Disable Alaya" | Toggle Alaya retrieval mode |
@@ -71,36 +76,52 @@ For **Cursor / Codex**: include SKILL.md in `.cursorrules` or project context co
 
 ## First Launch Detection [MANDATORY — CHECK AT SESSION START]
 
-At the start of every session, before doing anything else:
+At the start of every session, before doing anything else, locate the Alaya knowledge base:
 
 ```
-if alaya/config.json EXISTS:
-    Read config.json.
-    if config.enabled == false:
-        → Alaya is paused. Skip retrieval and xunxi.
-        → If user says "enable Alaya", set config.enabled = true and proceed.
-    else:
-        → System is active. Proceed normally.
-        → Run `python scripts/perfume.py --level 3` (backfill check, auto-skips if recent)
-        → Run `python scripts/build_index.py --incremental` (rebuild only changed categories)
-        → Check: does the active persona have a profile.md? If missing, suggest creating one.
+STEP 1 — Try ~/.alaya_path (cross-platform path file):
+    If ~/.alaya_path EXISTS:
+        Read kb_root from file.
+        Set ALAYA_ROOT = kb_root.
+        If {ALAYA_ROOT}/alaya/config.json EXISTS:
+            → Found via path file. Proceed to READ CONFIG below.
 
-if alaya/config.json DOES NOT EXIST:
+STEP 2 — Fallback: current directory (backward compat):
+    If ALAYA_ROOT not set yet and alaya/config.json EXISTS:
+        Set ALAYA_ROOT = current directory.
+        → Found via fallback. Proceed to READ CONFIG below.
+
+STEP 3 — Not found → First-time setup:
     → This is a first-time setup.
     → Inform the user: "Alaya is not configured yet. Let's set it up."
 
     Option A [bash available]: Run `python scripts/setup_wizard.py`
+      (setup_wizard.py writes ~/.alaya_path automatically at the end)
     Option B [no bash, manual]: Guide the user step by step:
       1. Choose a knowledge base root directory
       2. Create alaya/ subdirectory there
       3. Create alaya/config.json with default settings (from config/default_config.json)
       4. Copy default personas from manas/ to alaya/manas/
-      5. Create wiki/ with category subfolders for knowledge cards
+      5. Copy example wiki cards from examples/sample_knowledge_base/wiki/ to wiki/
       6. Run `python scripts/build_index.py` (if bash available)
+      7. Write kb_root to ~/.alaya_path for future sessions:
+         echo "{kb_root}" > ~/.alaya_path
     → After setup, tell user: "Setup complete. Alaya is ready."
+
+READ CONFIG:
+    Read {ALAYA_ROOT}/alaya/config.json.
+    if config.enabled == false:
+        → Alaya is paused. Skip retrieval and xunxi.
+        → If user says "enable Alaya", set config.enabled = true and proceed.
+    else:
+        → System is active. Use ALAYA_ROOT as the knowledge base root.
+        → Run `python scripts/perfume.py --level 3` (backfill check, auto-skips if recent)
+        → Check: does the active persona have a profile.md? If missing, suggest creating one.
 ```
 
-**Important**: Do NOT proceed with persona-based knowledge retrieval until setup is complete and config.enabled is true.
+**Important**: 
+- Do NOT proceed with persona-based knowledge retrieval until setup is complete and config.enabled is true.
+- `~/.alaya_path` is a plain text file containing exactly one line: the absolute path to the knowledge base root. It is created once during setup and read every session. This enables Alaya to work across different agent platforms (Claude Code, WorkBuddy, Codex, etc.) where the working directory may differ each session.
 
 ---
 
@@ -110,7 +131,7 @@ Alaya consists of three independent subsystems, each with its own data directory
 
 | System | Data Directory | Version Key | Purpose |
 |:--|:--|:--|:--|
-| **Knowledge** | `wiki/` | `config.knowledge.version` | Three-layer knowledge graph (index → category → card) |
+| **Knowledge** | `wiki/` | `config.knowledge.version` | Two-layer knowledge graph (index → category → card) with descriptions |
 | **Memory** | `alaya/memory/` | `config.memory.version` | Per-persona interaction history + shared ambient state |
 | **Persona** | `alaya/manas/` | `config.persona.version` | Persona definitions, affinity, voice profiles |
 
@@ -120,7 +141,7 @@ Each system can be updated independently. See Filesystem Convention for details.
 
 ## Core Behavior Rules [MANDATORY — ALL AGENTS MUST FOLLOW]
 
-<!-- ALAYA:KNOWLEDGE v1.7.0 -->
+<!-- ALAYA:KNOWLEDGE v2.0.0 -->
 
 ### Rule A: Question-Driven Retrieval + Persona Filtering
 
@@ -134,7 +155,7 @@ TIER 0: Load Active Persona + Memory Context
         → If no persona named, check ALL personas' triggers:
             - If any persona's `triggers.active` matches user's keywords → auto-select that persona
             - If user's emotion matches a persona's `triggers.emotions` → auto-select that persona
-            - If no match → use first persona in manas/ directory
+            - If no match → use first persona in manas/ directory (sorted alphabetically)
         → Read alaya/manas/{persona}.json
         → Load interest_foci, bias_dimensions, communication, signature_phrases, domain_scope
         → Read alaya/manas/{persona}_profile.md (if exists)
@@ -157,40 +178,102 @@ TIER 0: Load Active Persona + Memory Context
         ─── BI Observer (if bi_enabled) ───
         → Read alaya/memory/bi_notes.json (if exists)
             Provides: affinity_observations, dormant_alert, knowledge_gap_hint from last session
+            ↓
+        → If the most recent bi_notes record has a `system_health` array with items:
+            - If any item has severity=high → at Tier 0, briefly mention:
+              "⚠️ alaya系统提醒：{问题简述}。建议对智能体说「{自然语言行动}」"
+            - severity=medium/low items → silently note for Step 6 at session boundary
+            - Do NOT let health alerts dominate the conversation opening — one line max at Tier 0
+        → BI staleness check (passive, no script execution):
+            - If bi_notes.json last record date > 14 days ago → internal flag "BI过期"
+            - If 3+ consecutive sessions without any script-triggering action (build_index, perfume, health_check)
+              AND BI > 14 days stale:
+              → At next natural conversation pause, gently remind:
+                "Alaya 有一段时间没做维护了，需要我帮你检查一下系统状态吗？"
+            - This is a read-only check; it never blocks or interrupts the user
         → Check all {persona}_history.json last interaction dates
             If any persona >14d inactive → append dormant note to persona selection context
             (See Rule G: BI Observer Protocol for details)
     ↓
 TIER 1: Question-Driven Category Selection (persona-independent)
         → Read wiki/index.md (~1-2KB)
+        → Each category entry: [[{cat}/{cat}_category|{cat}]] + description paragraph
         → LLM matches user's question against category names and descriptions
         → Select top-K categories (K from config.knowledge.top_k, default 3)
-        → If Concept Network has cross-category links to selected categories, optionally expand
+        → Descriptions naturally express cross-category relationships in prose —
+          LLM reads "与认知科学在注意力概念上交叉" the same way it would read a graph edge
         → This step is purely question-driven — persona does NOT influence category selection
     ↓
 TIER 2: Build Candidate Pool (persona-independent)
-        → Read wiki/{category}/_category.md for each selected category
-        → Extract all Core cards (strength >= 0.5) as the candidate pool
-        → If candidate pool is small (< 5 cards), supplement from Peripheral section
+        → Read wiki/{category}/{category}_category.md ## Cards section for each selected category
+        → Read from "## Cards" marker onwards only (skip category header to save tokens)
+        → Each line: [[CardName]] — 一句话描述 (~80 chars/card, ~1KB total for 10 cards)
+        → LLM semantically matches query against card descriptions
+        → Select cards that best match the query → build candidate pool
+        → min_pool = config.knowledge.min_pool (default 5)
+        → If |pool| < min_pool:
+            → Fallback A: Return to index.md, use the next category in Tier 1 ranking, select more cards
+            → Fallback B (all categories exhausted): Include all remaining cards from selected categories
+        → Output: card ID list only (file paths) — NO full content read yet
         → This step is also question-driven — persona does NOT influence pool construction
     ↓
 TIER 3: Persona-Driven Card Selection + Deep Read
-        → Present the candidate pool to the LLM along with the persona's interest_foci
+        → Persona reads pool card descriptions (already in Tier 2 context) + own interest_foci
         → LLM semantically selects max_cards_per_persona cards (default 5, configurable in config)
           based on which cards best match the persona's perspective and interests
         → created_by_bonus: cards created by the current persona get extra consideration
-        → Read selected card full content (~12KB total)
+        → ONLY NOW read selected card full content (~10KB total for 5 cards)
         → Extract knowledge and answer in persona's voice
     ↓
 Answer in persona's voice + apply Warm Recall (see Memory section) + append RAI anchor
 ```
 
-**Key design principle**: Persona only intervenes at Tier 3. Tiers 1-2 are question-driven, ensuring reliable retrieval. Persona shapes **interpretation**, not retrieval.
+**Key design principle**: Persona only intervenes at Tier 3. Tiers 1-2 are question-driven, ensuring reliable retrieval. Persona shapes **interpretation**, not retrieval. Token efficiency: Tier 2 reads only one-line descriptions (~1KB); full card content is loaded only in Tier 3 for the 5 selected cards.
 
-**Index structure**: Each _category.md has three sections:
-- **Core** (strength >= 0.5): Always loaded, these are active well-used cards
-- **Peripheral** (strength 0.1–0.5): Loaded on-demand, these are fading but still visible cards
-- **Dormant** (strength < 0.1): Compact name list only, for wake-matching
+**Index structure (v2.0)**: Each category file has two sections:
+- **Header description** (auto-generated, can be LLM-refined): 3-5 sentences describing what the category covers
+- **## Cards**: Flat list of `[[CardName]] — description` pairs. No more Core/Peripheral/Dormant tiers — LLM semantic matching replaces strength-based filtering.
+
+**LLM Refinement Prompts**: When user says "更新类别描述" or "更新索引描述" (or when BI detects stale descriptions), the Agent uses the following prompt templates. Python `build_index.py` provides the fallback; these prompts produce the refined version.
+
+#### Category Header Refinement Prompt
+
+```
+Input: Category slug + all card descriptions from ## Cards section of {cat}_category.md
+
+Generate a Chinese category overview. Constraints:
+- 100-200 characters
+- 3-segment structure:
+  ① 领域定位（1句）：本类别在知识体系中的位置与学术/实践语境
+  ② 核心议题（2-3句）：从卡片描述中识别的主要主题线，标注卡片间的互补/递进/对立关系
+  ③ 阅读指引（1句）：建议的阅读切入点或学习路径
+- Use the card descriptions as raw material — distill, don't copy-paste
+- Write in prose, not bullet points
+- Cross-reference other categories when natural ("与XX类别在YY概念上交叉")
+
+Output: Write the generated text to the <!-- AUTO --> block of the category file.
+Preserve any existing <!-- MANUAL --> blocks.
+Do NOT modify the ## Cards section.
+```
+
+#### Index Entry Refinement Prompt
+
+```
+Input: wiki/index.md current content + all category headers (from {cat}_category.md <!-- AUTO --> blocks)
+
+For each category in the index, generate a refined entry. Constraints:
+- 150-300 characters per category
+- Content requirements:
+  ① 类别概述（从 category header 蒸馏，非照抄，换一个角度表述）
+  ② 与其他类别的交叉点（如"与XX类别在YY概念上交叉"——仅当确有关联时写）
+  ③ 适用场景提示（什么类型的问题应检索此类别）
+- Each entry starts with the wiki-link line, followed by the description paragraph
+- Write in prose, not bullet points
+- If a category has only 1-2 cards, keep the entry concise (≈150字)
+
+Output: Write ALL entries to the <!-- AUTO --> block of wiki/index.md (Categories section).
+Preserve any existing <!-- MANUAL --> blocks.
+```
 
 <!-- /ALAYA:KNOWLEDGE -->
 
@@ -323,25 +406,31 @@ python scripts/perfume.py --level 1 --cards {all_cited_cards} --persona {name} -
 
 This handles: card strength boost (summed per card), affinity increment, mood overwrite + trajectory push, attention tag decay/boost.
 
-**Step 2 — Read current state:**
+**Step 2 — Prepare semantic fields (from conversation observation):**
+
+Based on what you observed during the conversation, prepare the semantic ambient fields and history entry for the combined save command (see Step 3).
+
+**Step 3-5 — Atomic save (combined):**
+
+Run ONE script call that handles all three remaining steps atomically:
 ```
-Read alaya/memory/ambient.json
-Read alaya/memory/{active_persona}_history.json (if exists)
+python scripts/perfume.py --level save --persona {name} \
+  --ambient '{"recent_themes":"...","open_threads":[...],"user_style_notes":"..."}' \
+  --history '{"topic":"...","tags":[...],"mood":"...","summary":"...","key_insights":[...],"cards_cited":[...],"turns":N}' \
+  --alaya DIR --wiki DIR
 ```
 
-**Step 3 — Update ambient.json semantic fields:**
+The `--ambient` JSON accepts the same three semantic fields from the old Step 3:
 
-| Field | Action | Strategy |
-|---|---|---|
-| `recent_themes` | **Re-synthesize** | Based on this conversation + hot history, write 2-3 fresh Chinese sentences capturing what the user has been exploring and how. Do NOT reuse old value — always rewrite from scratch. |
-| `open_threads` | **Maintain** | Add new unresolved questions (with `{"question": "...", "since": "YYYY-MM-DD"}`). Remove questions that were answered satisfactorily or haven't been mentioned for 5+ interactions. Cap at 3. |
-| `user_style_notes` | **Append if new** | Only write if you discovered something new about how the user thinks, learns, or prefers to interact. Do not rotate or overwrite — this accumulates. |
+| Field | Strategy |
+|---|---|
+| `recent_themes` | **Re-synthesize**: Based on this conversation + hot history, write 2-3 fresh Chinese sentences capturing what the user has been exploring and how. Do NOT reuse old value — always rewrite from scratch. |
+| `open_threads` | **Maintain**: Add new unresolved questions (with `{"question": "...", "since": "YYYY-MM-DD"}`). Remove questions that were answered satisfactorily or haven't been mentioned for 5+ interactions. Cap at 3. |
+| `user_style_notes` | **Append if new**: Only write if you discovered something new about how the user thinks, learns, or prefers to interact. Do not rotate or overwrite — this accumulates. |
 
-Note: `recent_mood`, `mood_trajectory`, and `recent_attention` were already handled by the script in Step 1. Don't modify them here.
+Note: `recent_mood`, `mood_trajectory`, and `recent_attention` were already handled by the script in Step 1. Don't include them in `--ambient`.
 
-**Step 4 — Update {persona}_history.json hot zone:**
-
-Append one entry:
+The `--history` JSON follows this structure:
 ```json
 {
   "date": "{today}",
@@ -355,30 +444,9 @@ Append one entry:
 }
 ```
 
-If hot zone exceeds 5 entries, rotate oldest to cold zone (compress to: date, topic, tags, summary). Cold zone capped at 45.
+If hot zone exceeds 5 entries, the script rotates oldest to cold zone (compressed: date, topic, tags, summary). Cold zone capped at 45.
 
-**Step 5 — BI Observer Pass (LLM):**
-
-After saving, run a lightweight meta-observation. Read and analyze cross-persona patterns:
-
-1. Read all `alaya/memory/{persona}_history.json` hot zones
-2. Read all `alaya/manas/{persona}.json` affinity sections
-3. Observe (no scoring, no ranking):
-   - **Affinity network**: Which persona pairs show mutual growth (bidirectional >0.3)? Any asymmetric patterns?
-   - **Dormant personas**: Any persona not interacted with for 14+ days?
-   - **Knowledge gaps**: Do any persona interest_foci lack matching wiki categories, or have <5 core cards?
-4. If noteworthy patterns found, append to `alaya/memory/bi_notes.json`:
-
-```json
-{
-  "date": "{today}",
-  "affinity_observations": ["{descriptive insight, e.g. 'Feynman-Buddha mutual affinity growing, user alternates their perspectives'}"],
-  "dormant_alert": ["{persona}: {days} days inactive, interests: {top3}"],
-  "knowledge_gap_hint": ["{interest} lacks category / thin content"]
-}
-```
-
-Max 20 entries in bi_notes.json — if exceeded, keep latest 20.
+The script automatically runs the BI Observer pass (dormant personas, knowledge gaps, affinity asymmetry) and saves findings to `bi_notes.json` and a protocol checklist to `_protocol_checklist.json`.
 
 **Step 6 — Confirm to user:**
 ```
@@ -387,16 +455,45 @@ Max 20 entries in bi_notes.json — if exceeded, keep latest 20.
 - 关注主题：{one-line summary of recent_themes}
 - 未解问题：{count} 个
 ```
-If BI found dormant persona or knowledge gap, append one line:
+
+If the saved `bi_notes.json` record contains `system_health` items, display them after the confirmation block:
+
 ```
-- BI 提示：{dormant alert or gap hint}
+{severity_marker} alaya系统提醒您：
+  • {问题简述}（{依据数据}）
+    → {建议用户对智能体说的自然语言提示词}
 ```
+
+**Severity marker rules:**
+- If any item has `severity=high`: use `⚠️`
+- Otherwise: use `📋`
+
+**Example output:**
+```
+⚠️ alaya系统提醒您：
+  • 检测到 3 个脏类别（量子物理、机器学习、哲学）
+    → 建议您对智能体说「重建索引」，智能体会自动全量构建知识图谱，修复所有脏类别和连边关系
+  • 知识图谱索引 index.md 不存在，尚未初始化
+    → 建议您对智能体说「构建索引」，智能体会自动初始化知识图谱的三层网络结构
+📋 alaya系统提醒您：
+  • 2 个角色超过 14 天未互动：庄子(28d)、小昭(16d)
+    → 建议您和庄子、小昭聊聊最近的话题，重新激活他们的视角和知识储备
+```
+
+**Important rules:**
+- If `system_health` is empty (all clear), show nothing extra after the confirmation block.
+- Each item MUST include: what problem is, what data supports it, and a natural-language action the user can say to the Agent.
+- Do NOT show raw command strings (e.g. "python scripts/build_index.py") — always phrase as something the user says to the Agent.
 
 **Special cases:**
 - **User says "记一下" mid-conversation**: Execute Save Protocol immediately, then continue. Don't wait for boundary detection.
-- **Group discussion**: Save history for ALL participating personas. Ambient is shared — update once.
+- **Group discussion**: Save history for ALL participating personas. Run `--level save` once per persona: first call includes both `--ambient` and `--history`, subsequent calls only need `--history` (omit `--ambient` to avoid overwriting).
 - **Save fails** (file write error): Report "保存失败，你可以稍后让我重试" and keep the conversation context for manual recovery.
 - **3+ interactions without save**: If hot zone's latest entry is >3 interactions old (check by counting turns since last save mention), proactively remind: "需要我帮你记一下最近的讨论吗？"
+
+**Step 7 (隐式) — 索引刷新检查**: After save confirmation and BI notes display, check `.index_metadata.json`:
+- If `stale_descriptions` is non-empty → Agent proactively runs "更新类别描述" on stale categories
+- If `index_desync` detected by BI → Agent proactively runs "更新索引描述"
 
 #### When to read deeper memory
 
@@ -615,10 +712,10 @@ Separator after Phase 2:
 —— 两轮结束 ——
 ```
 
-**Default**: 2 rounds (Phase 1 + Phase 2). User can override:
-- "每人一轮" → single round only
+**Default**: 1 round (Phase 1 only — Independent Opinions). User can override:
+- "再来一轮" / "继续" → Phase 2 cross-reference round
 - "自然收尾" → unlimited rounds until organic conclusion
-- "继续" → extend beyond 2 rounds
+- "停" / "够了" → terminate early
 
 #### Persona Message Format
 
@@ -671,9 +768,9 @@ After group discussion ends:
 ```
 {knowledge_base_root}/
 ├── wiki/                               ← Knowledge System (config.knowledge)
-│   ├── index.md                        ← Layer 1: Category overview + Concept Network
+│   ├── index.md                        ← Layer 1: Category overview with descriptions
 │   ├── {category-1}/
-│   │   ├── _category.md                ← Layer 2: Card list + Card Relations
+│   │   ├── {category-1}_category.md    ← Layer 2: Category header + card list with descriptions
 │   │   └── *.md                        ← Layer 3: Knowledge cards
 │   └── ...
 ├── raw/                                ← Source documents (optional)
@@ -712,6 +809,42 @@ Each persona may also have a **companion profile file** (`manas/{name}_profile.m
 
 ---
 
+## Paper Import Workflow
+
+When user says "import paper / import PDF / 导入论文":
+
+### Step 1 — Get metadata
+
+```
+python scripts/import_paper.py <file_or_url> --mode info
+```
+
+Returns JSON: `{title, type_hint, chars, preview, recommendation}`
+
+### Step 2 — Present options to user
+
+Present the detected info and ask:
+> (1) **总结摘要** — LLM summarizes into template structure (see `templates/`). Ask user for max chars (default 2000).
+> (2) **全文提取** — Save full text as wiki card, no truncation.
+
+### Step 3 — Execute
+
+**Option A — Full mode** (user wants all content):
+```
+python scripts/import_paper.py <file> --mode full [--category cat]
+```
+Script extracts and saves full text as a wiki card with proper Alaya frontmatter.
+
+**Option B — Summary mode** (user wants summarized content):
+1. Read the appropriate template: `templates/paper_summary.md`, `templates/news_summary.md`, or `templates/other_summary.md`
+2. Summarize extracted text following the template structure, within user's max-char limit
+3. Write the filled card to `wiki/{category}/{slug}.md`
+4. Run: `python scripts/build_index.py --category {cat}`
+
+Templates are editable Markdown files. Users can customize section headers or add new sections by editing `templates/{type}_summary.md`.
+
+---
+
 ## Scripts Reference
 
 ### Core
@@ -719,8 +852,8 @@ Each persona may also have a **companion profile file** (`manas/{name}_profile.m
 | Script | Purpose | Called By Agent When |
 |:--|:--|:--|
 | `scripts/setup_wizard.py` | Interview-style config + persona creation | First launch detection |
-| `scripts/build_index.py` | Build three-layer index + inject missing metadata | "build index" / after import / session start |
-| `scripts/import_paper.py` | Import single paper (URL or local file) | "import paper {url}" |
+| `scripts/build_index.py` | Build two-layer index + inject missing metadata + extract descriptions | "build index" / after import |
+| `scripts/import_paper.py` | Two-mode import (info/full), supports paper/news/other | "import paper {url}" |
 | `scripts/batch_import.py` | Batch import files (MD/PDF/TXT) with checkpoint | "batch import {path}" / "import {path}" |
 | `scripts/perfume.py` | Three-level xunxi orchestrator | Topic switch / session start / manual |
 
@@ -798,7 +931,7 @@ Each persona may also have a **companion profile file** (`manas/{name}_profile.m
 
 ## Architecture (One-Paragraph)
 
-> Inspired by Yogacara Buddhism's Eight Consciousnesses: the **Alaya (Storehouse Consciousness)** is the shared seed bank (knowledge base). Each **Manas (Ego Consciousness)** is an independent grasping engine (persona with interest_foci, affinity, communication style). The **Sixth Consciousness** is the LLM reasoning engine. A single query triggers question-driven retrieval from the Alaya (Tiers 1-2), then branches through the Manas — each persona selects and interprets different cards from the same candidate pool (Tier 3). The **Memory System** adds emotional continuity: per-persona history preserves unique relationship context, while shared ambient state provides cross-persona awareness. No vector database needed — pure filesystem.
+> Inspired by Yogacara Buddhism's Eight Consciousnesses: the **Alaya (Storehouse Consciousness)** is the shared seed bank (knowledge base). Each **Manas (Ego Consciousness)** is an independent grasping engine (persona with interest_foci, affinity, communication style). The **Sixth Consciousness** is the LLM reasoning engine. A single query triggers question-driven retrieval from the Alaya: LLM reads category descriptions from index.md (Tier 1), scans card descriptions in category files (Tier 2), builds a candidate pool, then branches through the Manas — each persona selects and interprets different cards from the same pool (Tier 3). The **Memory System** adds emotional continuity. Knowledge grows denser as more cards share tag spaces → descriptions naturally express richer cross-connections → LLM discovers more distinctive retrieval paths. No vector database, no graph algorithms — pure filesystem with LLM semantic understanding.
 
 ---
 
@@ -876,7 +1009,7 @@ Follow the exact profile template chapters: 核心人设 → 语言风格基调 
 Check:
 - [ ] Persona traits and example dialogues are self-consistent
 - [ ] JSON has all required fields (ego_vector, triggers, domain_scope, icon, signature_phrases)
-- [ ] profile.md has all required sections (核心人设, 语言风格基调, 使用场景, 行为要求, 典型对话示例)
+- [ ] profile.md has all required sections (核心人设, 知识边界, 语言风格基调, 使用场景, 行为要求, 典型对话示例)
 - [ ] Knowledge boundary is clearly defined
 - [ ] No contradictory instructions (e.g., "doesn't understand tech" but example shows deep tech discussion)
 

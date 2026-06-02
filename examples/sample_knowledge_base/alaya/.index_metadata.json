@@ -1,13 +1,18 @@
 {
-  "last_full_build": "2026-06-01",
+  "last_full_build": "2026-06-02",
   "categories": {
-    "ai-fundamentals": {
-      "last_build": "2026-06-01",
-      "card_count": 2
+    "cognitive-science": {
+      "last_build": "2026-06-02",
+      "card_count": 3
     },
     "deep-learning": {
-      "last_build": "2026-06-01",
-      "card_count": 2
+      "last_build": "2026-06-02",
+      "card_count": 7
+    },
+    "philosophy": {
+      "last_build": "2026-06-02",
+      "card_count": 1
     }
-  }
+  },
+  "stale_descriptions": []
 }

@@ -3,7 +3,7 @@
 # Handles MD/TXT natively, PDF via PyMuPDF (optional).
 # Unsupported formats return None with Agent guidance template.
 
-import os
+import os, sys
 
 AGENT_TEMPLATE = """\
 Unsupported format: {filename}
@@ -51,14 +51,25 @@ def detect_format(filepath):
     return formats.get(ext)
 
 
-def extract_text(filepath, max_chars=8000):
-    """Extract text content from file. Returns str or None."""
+def extract_text(filepath, max_chars=None):
+    """Extract text content from file. Returns str or None.
+
+    When max_chars is None (default), reads the entire file.
+    When set to a positive integer, limits extraction and prints a warning to stderr if truncated.
+    """
     fmt = detect_format(filepath)
     if fmt in ('markdown', 'text'):
-        return _read_direct(filepath, max_chars)
-    if fmt == 'pdf':
-        return _read_pdf(filepath, max_chars)
-    return None
+        text = _read_direct(filepath, max_chars)
+    elif fmt == 'pdf':
+        text = _read_pdf(filepath, max_chars)
+    else:
+        text = None
+
+    if text is not None and max_chars is not None and len(text) >= max_chars:
+        print(f"Warning: Content truncated at {max_chars} characters. "
+              f"Use --max-chars N to increase or --mode full to extract entire file.",
+              file=sys.stderr)
+    return text
 
 
 def extract_metadata(filepath):
@@ -86,11 +97,11 @@ def get_agent_template(filepath, date_str=''):
 def _read_direct(filepath, max_chars):
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
-            return f.read(max_chars)
+            return f.read(max_chars) if max_chars is not None else f.read()
     except (UnicodeDecodeError, IOError):
         try:
             with open(filepath, 'r', encoding='gbk') as f:
-                return f.read(max_chars)
+                return f.read(max_chars) if max_chars is not None else f.read()
         except IOError:
             return None
 
@@ -108,11 +119,11 @@ def _read_pdf(filepath, max_chars):
             t = page.get_text()
             text_parts.append(t)
             total += len(t)
-            if total >= max_chars:
+            if max_chars is not None and total >= max_chars:
                 break
         doc.close()
         full = '\n'.join(text_parts)
-        return full[:max_chars]
+        return full if max_chars is None else full[:max_chars]
     except Exception:
         return None
 

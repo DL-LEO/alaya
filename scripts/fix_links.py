@@ -4,6 +4,9 @@
 
 import os, sys, re
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib.yaml_utils import is_category_file
+
 wiki_dir = sys.argv[1] if len(sys.argv) > 1 else "wiki"
 
 if not os.path.exists(wiki_dir):
@@ -11,11 +14,10 @@ if not os.path.exists(wiki_dir):
     sys.exit(1)
 
 # Build card name index (case-insensitive) from category subfolders
-SKIP_FILES_FIX = {"_category.md", "index.md", "log.md"}
 card_names = {}
 for root, dirs, files in os.walk(wiki_dir):
     for fname in files:
-        if fname.endswith(".md") and fname not in SKIP_FILES_FIX:
+        if fname.endswith(".md") and not fname.startswith("~$") and fname != "index.md" and fname != "log.md" and not is_category_file(fname):
             name = fname.replace(".md", "")
             card_names[name.lower()] = name
 
@@ -51,7 +53,7 @@ def make_fix_link(file_card_names):
 
 for root, dirs, files in os.walk(wiki_dir):
     for fname in files:
-        if not fname.endswith(".md") or fname in SKIP_FILES_FIX:
+        if not fname.endswith(".md") or fname.startswith("~$") or fname == "index.md" or fname == "log.md" or is_category_file(fname):
             continue
 
         fpath = os.path.join(root, fname)

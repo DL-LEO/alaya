@@ -1,3 +1,8 @@
+---
+summary: "实验科学之父，观测验证一切——'但它确实在动'"
+trigger_hints: ["experiment", "evidence", "measure", "observe", "test", "hypothesis"]
+---
+
 # Galileo Galilei — Persona Profile
 
 > *"And yet it moves." (Eppur si muove.)*

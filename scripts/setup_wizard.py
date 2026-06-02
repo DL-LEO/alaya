@@ -10,7 +10,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PKG_ROOT = os.path.dirname(SCRIPT_DIR)
 
 # ===== Persona Creation Interview (Q1~Q8) =====
-def create_persona_interview(alaya_dir):
+def create_persona_interview(alaya_dir, default_language="zh"):
     print("\n  " + "-" * 40)
     print("  Persona Creation Interview")
     print("  " + "-" * 40)
@@ -19,7 +19,7 @@ def create_persona_interview(alaya_dir):
         "version": 1,
         "created_at": datetime.now().strftime('%Y-%m-%d'),
         "is_omniview": False,
-        "language": "en",
+        "language": default_language,
         "affinity": {},
         "interaction_history": [],
         "confidence": 0.75,
@@ -161,10 +161,6 @@ def create_persona_interview(alaya_dir):
         "emotions": []
     }
 
-    # Determine language
-    if any(ord(c) > 127 for c in name):
-        persona["language"] = "zh"
-
     # Save JSON
     manas_dir = os.path.join(alaya_dir, "manas")
     os.makedirs(manas_dir, exist_ok=True)
@@ -250,16 +246,16 @@ alaya_dir = os.path.join(kb_root, "alaya")
 os.makedirs(alaya_dir, exist_ok=True)
 
 config = {
-    "version": "1.8.0",
+    "version": "2.0.0",
     "name": "Alaya",
     "name_zh": "识海",
     "language": "zh",
     "bi_enabled": True,
     "enabled": True,
     "knowledge": {
-        "version": "1.7.0",
+        "version": "2.0.0",
         "top_k": 3,
-        "max_cards": 5,
+        "min_pool": 5,
         "half_life_default": 30,
         "strength_decay": 0.977,
         "sleep_threshold": 0.1,
@@ -305,6 +301,14 @@ if k.isdigit():
     config["knowledge"]["top_k"] = int(k)
 print(f"  -> top_K = {config['knowledge']['top_k']}")
 
+# Q4b: min_pool
+print("\n  Minimum candidate pool size (min_pool, default 5)")
+print("  If Tier 2 first pass yields fewer than min_pool cards, add more categories.")
+mp = input("  Value [default: 5]: ").strip()
+if mp.isdigit():
+    config["knowledge"]["min_pool"] = int(mp)
+print(f"  -> min_pool = {config['knowledge']['min_pool']}")
+
 # Q5: Sleep notification threshold
 print("\n[5/6] Sleep notification threshold (default 30)")
 print("  How many dormant seeds before notification?")
@@ -331,34 +335,99 @@ print("\n[6/6] Create personas")
 create = input("  Create a persona now? y/n [default: y]: ").strip()
 if create.lower() != "n":
     while True:
-        create_persona_interview(alaya_dir)
+        create_persona_interview(alaya_dir, default_language=config.get("language", "zh"))
         more = input("\n  Create another? y/n [default: n]: ").strip()
         if more.lower() != "y":
             break
 
-# Auto-copy default personas if available
+# Auto-copy default personas (always)
 package_manas = os.path.join(PKG_ROOT, "manas")
 if os.path.exists(package_manas):
-    default_files = [f for f in os.listdir(package_manas) if f.endswith(".json")]
+    default_files = [f for f in os.listdir(package_manas) if f.endswith(".json") or f.endswith("_profile.md")]
     if default_files:
-        copy_defaults = input(f"\n  Copy {len(default_files)} default personas from package? y/n [default: y]: ").strip()
-        if copy_defaults.lower() != "n":
-            dest_manas = os.path.join(alaya_dir, "manas")
-            os.makedirs(dest_manas, exist_ok=True)
-            for f in default_files:
-                src_path = os.path.join(package_manas, f)
-                dst_path = os.path.join(dest_manas, f)
-                if not os.path.exists(dst_path):
-                    shutil.copy2(src_path, dst_path)
-                    print(f"    Copied: {f}")
-            print(f"  {len(default_files)} default personas ready")
+        dest_manas = os.path.join(alaya_dir, "manas")
+        os.makedirs(dest_manas, exist_ok=True)
+        copied = 0
+        skipped = 0
+        for f in default_files:
+            src_path = os.path.join(package_manas, f)
+            dst_path = os.path.join(dest_manas, f)
+            if not os.path.exists(dst_path):
+                shutil.copy2(src_path, dst_path)
+                copied += 1
+            else:
+                skipped += 1
+        json_count = sum(1 for f in default_files if f.endswith('.json'))
+        profile_count = sum(1 for f in default_files if f.endswith('_profile.md'))
+        if copied > 0:
+            print(f"\n  {json_count} default personas + {profile_count} profiles installed ({copied} new, {skipped} skipped)")
+        else:
+            print(f"\n  {json_count} default personas + {profile_count} profiles already present (all {skipped} skipped)")
+
+# Auto-copy example wiki content
+package_wiki = os.path.join(PKG_ROOT, "examples", "sample_knowledge_base", "wiki")
+if os.path.exists(package_wiki):
+    user_wiki = os.path.join(kb_root, "wiki")
+    os.makedirs(user_wiki, exist_ok=True)
+    wiki_copied = 0
+    wiki_skipped = 0
+    for root, dirs, files in os.walk(package_wiki):
+        rel_dir = os.path.relpath(root, package_wiki)
+        if rel_dir == ".":
+            dest_dir = user_wiki
+        else:
+            dest_dir = os.path.join(user_wiki, rel_dir)
+        os.makedirs(dest_dir, exist_ok=True)
+        for f in files:
+            src_path = os.path.join(root, f)
+            dst_path = os.path.join(dest_dir, f)
+            if not os.path.exists(dst_path):
+                shutil.copy2(src_path, dst_path)
+                wiki_copied += 1
+            else:
+                wiki_skipped += 1
+    if wiki_copied > 0:
+        print(f"\n  Wiki examples installed: {wiki_copied} cards ({wiki_skipped} skipped)")
+    else:
+        print(f"\n  Wiki directory already populated ({wiki_skipped} existing cards)")
+
+# Save knowledge base path for cross-platform detection
+alaya_path_file = os.path.expanduser("~/.alaya_path")
+try:
+    with open(alaya_path_file, "w", encoding="utf-8") as f:
+        f.write(kb_root.strip())
+    print(f"  Path saved: {alaya_path_file}")
+except (IOError, OSError) as e:
+    print(f"  (Note: could not save path file: {e})")
 
 print("\n" + "=" * 50)
 print("  Setup complete!")
 print(f"  Config saved to: {config_path}")
 print("=" * 50)
-print("\nNext steps:")
-print("  1. Place your .md knowledge cards in wiki/{category}/ subfolders")
-print("  2. Run: python scripts/build_index.py")
-print("  3. Start chatting: 'Enable Alaya'")
-print("\n  Next time you chat, Alaya will auto-detect the setup and skip this wizard.")
+print("\nNext steps — try saying:")
+print("")
+print("  📚 Build your knowledge base")
+print('    "帮我构建索引"        → Scan wiki/ and build category index with descriptions')
+print('    "导入这篇论文"        → Import paper PDF with summary or full text')
+print('    "批量导入 raw/"       → Batch import documents from raw/ folder')
+print('    "补充卡片描述"        → Auto-extract missing card descriptions from body')
+print('    "更新类别描述"        → LLM regenerates category headers (100-200字)')
+print('    "更新索引描述"        → LLM regenerates index entries (150-300字)')
+print("")
+print("  👤 Create or manage personas")
+print('    "创建角色 Feynman"    → Interview-style persona creation (7 steps)')
+print('    "蒸馏角色 庄子"       → Distill a persona from conversation')
+print('    "克隆角色 小昭"       → Clone an existing persona then customize')
+print("")
+print("  💬 Chat with personas")
+print('    "Feynman, 解释量子纠缠"  → Ask a persona with their unique voice')
+print('    "叫Feynman和Buddha讨论XX"  → Multi-persona group discussion')
+print('    "各位大佬"            → Trigger a roundtable discussion')
+print("")
+print("  🔄 Maintenance")
+print('    "运行熏习"           → Run knowledge decay and maintenance')
+print('    "健康检查"            → Verify system integrity')
+print('    "BI观察"              → Cross-persona pattern observation')
+print("")
+print("  Tip: Say 'alaya init' anytime to re-run this setup wizard.")
+print("  (Or 'Enable Alaya' to start a conversation.)")

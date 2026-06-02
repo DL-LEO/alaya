@@ -5,7 +5,7 @@ import os, sys
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib.yaml_utils import read_frontmatter, get_field, get_field_float, set_field, rebuild_content, find_card
+from lib.yaml_utils import read_frontmatter, get_field, get_field_float, set_field, rebuild_content, find_card, is_category_file
 
 CORE_THRESHOLD = 0.5
 
@@ -30,7 +30,10 @@ def boost_cards(wiki_dir, cited_cards, kcfg, today):
             dirty.append(cat_dir)
 
         count_str = get_field(yaml_str, "activation_count")
-        count = int(count_str) + 1 if count_str else 1
+        try:
+            count = int(count_str) + 1 if count_str else 1
+        except (ValueError, TypeError):
+            count = 1
 
         yaml_str = set_field(yaml_str, "strength", f"{strength:.2f}")
         yaml_str = set_field(yaml_str, "activation_count", str(count))
@@ -55,7 +58,7 @@ def decay_all(wiki_dir, kcfg, today):
 
     for root, dirs, files in os.walk(wiki_dir):
         for fname in files:
-            if not fname.endswith(".md") or fname in ("index.md", "log.md", "_category.md"):
+            if not fname.endswith(".md") or fname in ("index.md", "log.md") or is_category_file(fname):
                 continue
 
             fpath = os.path.join(root, fname)
@@ -109,7 +112,7 @@ def wake_seeds(wiki_dir, keyword, kcfg, today):
 
     for root, dirs, files in os.walk(wiki_dir):
         for fname in files:
-            if not fname.endswith(".md") or fname in ("index.md", "log.md", "_category.md"):
+            if not fname.endswith(".md") or fname in ("index.md", "log.md") or is_category_file(fname):
                 continue
 
             fpath = os.path.join(root, fname)

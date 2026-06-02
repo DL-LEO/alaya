@@ -1,5 +1,5 @@
 {
-  "version": "1.8.0",
+  "version": "2.0.0",
   "name": "Alaya",
   "name_zh": "识海",
   "language": "zh",
@@ -7,9 +7,9 @@
   "enabled": true,
 
   "knowledge": {
-    "version": "1.7.0",
+    "version": "2.0.0",
     "top_k": 3,
-    "max_cards": 5,
+    "min_pool": 5,
     "half_life_default": 30,
     "strength_decay": 0.977,
     "sleep_threshold": 0.1,

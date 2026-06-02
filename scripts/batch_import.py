@@ -9,7 +9,7 @@ import json, os, sys
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib.yaml_utils import read_frontmatter, inject_metadata, rebuild_content, extract_title, get_tags, slugify
+from lib.yaml_utils import read_frontmatter, inject_metadata, rebuild_content, extract_title, get_tags, slugify, extract_description_from_body
 from lib.format_converter import detect_format, extract_text, get_agent_template
 
 
@@ -168,16 +168,25 @@ def main():
             content, yaml_str, dash = result
             title = extract_title(yaml_str, slug)
             tags = get_tags(yaml_str)
+            # Extract description from body if not already in YAML
+            if 'description:' not in yaml_str:
+                body_text = content[dash + 3:].lstrip('\n')
+                desc = extract_description_from_body(body_text)
+                if desc:
+                    desc_line = f'\ndescription: "{desc}"'
+                    yaml_str = yaml_str.rstrip() + desc_line
             new_yaml = inject_metadata(yaml_str, {'last_activated': today, 'created_by': 'system'})
             card_content = rebuild_content(new_yaml, dash, content)
         else:
             # No YAML — create card with full frontmatter
             title = slug
             tags = []
+            desc = extract_description_from_body(text)
+            desc_line = f'\ndescription: "{desc}"' if desc else ''
             card_content = (
                 f'---\ntitle: "{title}"\nseed_type: REFINED\ncreated_by: system\n'
                 f'strength: 0.5\nlast_activated: {today}\n'
-                f'activation_count: 0\nhalf_life: 30\n---\n\n{text}'
+                f'activation_count: 0\nhalf_life: 30{desc_line}\n---\n\n{text}'
             )
 
         # Write to wiki/{category}/{slug}.md

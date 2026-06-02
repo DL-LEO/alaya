@@ -11,15 +11,19 @@
     "interest_foci": {
       "area_1_name": {"value": 0.9, "floor": 0.15},
       "area_2_name": {"value": 0.8, "floor": 0.1},
-      "area_3_name": {"value": 0.7, "floor": 0.1}
+      "area_3_name": {"value": 0.7, "floor": 0.1},
+      "area_4_name": {"value": 0.7, "floor": 0.1},
+      "area_5_name": {"value": 0.6, "floor": 0.1}
     },
     "bias_dimensions": {
       "dimension_1": {"value": 0.9, "floor": 0.15},
-      "dimension_2": {"value": 0.8, "floor": 0.1}
+      "dimension_2": {"value": 0.8, "floor": 0.1},
+      "dimension_3": {"value": 0.7, "floor": 0.1}
     },
     "communication": {
       "style_1": {"value": 0.9, "floor": 0.15},
-      "style_2": {"value": 0.8, "floor": 0.1}
+      "style_2": {"value": 0.8, "floor": 0.1},
+      "style_3": {"value": 0.7, "floor": 0.1}
     }
   },
   "affinity": {},
@@ -29,7 +33,7 @@
     "behavior": "auto",
     "auto_trigger_threshold": 0.7
   },
-  "signature_phrases": ["phrase1", "phrase2"],
+  "signature_phrases": ["phrase1", "phrase2", "phrase3", "phrase4", "phrase5"],
   "icon": "🤖",
   "domain_scope": {
     "owns": ["area1"],

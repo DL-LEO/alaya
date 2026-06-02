@@ -10,8 +10,7 @@ __pycache__/
 /alaya/
 
 # Test artifacts
-tests/test_workdir/
-tests/results/
+tests/
 
 # OS
 .DS_Store
