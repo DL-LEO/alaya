@@ -5,7 +5,7 @@
 >
 > *Description-driven retrieval. One knowledge base, many perspectives.*
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](CHANGELOG.md)
 
 ---
@@ -205,7 +205,7 @@ alaya-pkg/
 ├── SKILL.md              ← Agent instruction file (the brain)
 ├── README.md
 ├── CHANGELOG.md
-├── LICENSE               ← MIT
+├── LICENSE               ← Apache 2.0
 ├── .gitignore
 ├── requirements.txt
 ├── config/
@@ -558,4 +558,4 @@ Agent：🏛️ "但'to attend'到底是什么意思？让我们追问……"
 
 ### 开源协议
 
-MIT
+Apache 2.0

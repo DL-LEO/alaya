@@ -4,7 +4,7 @@ name_zh: 识海
 description: "Personified multi-role knowledge memory system. Shared knowledge base, each persona sees it differently."
 version: 2.0.0
 author: Liang Shao
-license: MIT
+license: Apache-2.0
 compatibility:
   - WorkBuddy
   - Claude Code
