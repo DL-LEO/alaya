@@ -5,7 +5,7 @@
 # Usage:
 #   python scripts/batch_import.py <source_dir> [--category cat] [--wiki dir] [--alaya dir]
 
-import json, os, sys
+import json, os, shutil, sys
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -162,6 +162,36 @@ def main():
             continue
 
         # Build wiki card
+        # Determine source type from file extension
+        ext = os.path.splitext(fpath)[1].lower()
+        if ext in ('.pdf',):
+            source_type_val = 'pdf'
+        elif ext in ('.md',):
+            source_type_val = 'md'
+        elif ext in ('.txt',):
+            source_type_val = 'txt'
+        else:
+            source_type_val = 'local'
+
+        # Copy source file to raw/ for persistent storage and deep read
+        source_file_val = ''
+        raw_dir = 'raw'
+        raw_dest = os.path.join(raw_dir, slug + ext)
+        try:
+            if not os.path.exists(raw_dest):
+                os.makedirs(raw_dir, exist_ok=True)
+                shutil.copy2(fpath, raw_dest)
+            source_file_val = raw_dest
+        except (IOError, OSError):
+            pass  # Non-fatal — card still created without source file
+
+        # Build source frontmatter snippet
+        source_fm = ''
+        if source_file_val:
+            source_fm += f'source_file: "{source_file_val}"\n'
+        if source_type_val:
+            source_fm += f'source_type: {source_type_val}\n'
+
         result = read_frontmatter(fpath)
         if result:
             # Source file has YAML — inject Alaya fields
@@ -176,6 +206,9 @@ def main():
                     desc_line = f'\ndescription: "{desc}"'
                     yaml_str = yaml_str.rstrip() + desc_line
             new_yaml = inject_metadata(yaml_str, {'last_activated': today, 'created_by': 'system'})
+            # Append source fields if not already present
+            if source_fm and 'source_file:' not in yaml_str:
+                new_yaml = new_yaml.rstrip() + '\n' + source_fm.rstrip()
             card_content = rebuild_content(new_yaml, dash, content)
         else:
             # No YAML — create card with full frontmatter
@@ -186,7 +219,9 @@ def main():
             card_content = (
                 f'---\ntitle: "{title}"\nseed_type: REFINED\ncreated_by: system\n'
                 f'strength: 0.5\nlast_activated: {today}\n'
-                f'activation_count: 0\nhalf_life: 30{desc_line}\n---\n\n{text}'
+                f'activation_count: 0\nhalf_life: 30{desc_line}\n'
+                f'{source_fm}'
+                f'---\n\n{text}'
             )
 
         # Write to wiki/{category}/{slug}.md

@@ -7,7 +7,7 @@
 #   python scripts/import_paper.py <url_or_path> --mode info [--category cat] [--wiki dir]
 #   python scripts/import_paper.py <url_or_path> --mode full [--category cat] [--wiki dir]
 
-import json, os, re, sys, urllib.request
+import json, os, re, sys, shutil, urllib.request
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -293,7 +293,7 @@ def mode_full(source, category, wiki_dir, content_type, max_chars, template_dir)
     # Detect content type for frontmatter
     fm_type = {'paper': 'paper', 'news': 'news', 'other': 'note'}.get(content_type, 'note')
 
-    # Build wiki card with FULL text (the fix for the truncation bug!)
+    # Build wiki card with FULL text
     body = (
         f'# {title}\n\n'
         f'> Imported from: {source_url}\n'
@@ -302,16 +302,53 @@ def mode_full(source, category, wiki_dir, content_type, max_chars, template_dir)
         f'{text}\n'
     )
 
+    # Determine source type and handle file copy for local sources
+    source_file_val = ''
+    source_url_val = source_url
+    source_type_val = 'url'
+
+    if os.path.exists(source):
+        # Local file — determine type by extension
+        ext = os.path.splitext(source)[1].lower()
+        if ext in ('.pdf',):
+            source_type_val = 'pdf'
+        elif ext in ('.md',):
+            source_type_val = 'md'
+        elif ext in ('.txt',):
+            source_type_val = 'txt'
+        else:
+            source_type_val = 'local'
+
+        # Copy to raw/ directory for persistent storage and deep read
+        raw_dir = 'raw'
+        os.makedirs(raw_dir, exist_ok=True)
+        raw_dest = os.path.join(raw_dir, slug + ext)
+        try:
+            shutil.copy2(source, raw_dest)
+            source_file_val = raw_dest  # e.g. "raw/my-paper.pdf"
+            print(f'  Source file saved: {raw_dest}')
+        except (IOError, OSError) as e:
+            print(f'  (Note: could not copy source file: {e})')
+    elif arxiv_id:
+        source_url_val = f'https://arxiv.org/abs/{arxiv_id}'
+        source_type_val = 'url'
+
     # Extract description from body text (v2.0 requirement)
     desc = extract_description_from_body(body)
     desc_line = f'\ndescription: "{desc}"' if desc else ''
+
+    # Build source fields for frontmatter
+    source_file_line = f'source_file: "{source_file_val}"\n' if source_file_val else ''
+    source_type_line = f'source_type: {source_type_val}\n' if source_type_val else ''
 
     card_content = (
         f'---\n'
         f'title: "{title}"\n'
         f'type: {fm_type}\n'
         f'created: {today}\n'
-        f'source: "{source_url}"\n'
+        f'source: "{source_url_val}"\n'
+        f'{source_file_line}'
+        f'{source_type_line}'
         f'tags: [imported]\n'
         f'seed_type: REFINED\n'
         f'created_by: system\n'

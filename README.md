@@ -155,6 +155,21 @@ Agent: 🏛️ "But what does it truly mean to 'attend'? Let us question..."
        [Same knowledge, completely different perspective]
 ```
 
+### Visualize with Obsidian (Recommended)
+
+Alaya's wiki uses `[[wikilinks]]` — the same format as [Obsidian](https://obsidian.md).
+Open your knowledge base root as an Obsidian vault to see your knowledge graph visually:
+
+1. Download [Obsidian](https://obsidian.md/download) (free)
+2. Open → **"Open folder as vault"** → select your knowledge base root (the directory containing `wiki/`)
+3. Click **Graph View** (top-right) → see all your cards and their connections as an interactive graph
+
+Your wiki cards, category hierarchy, and cross-references all appear in Obsidian's graph view.
+This is the recommended way to visually explore your growing knowledge base.
+
+**Tip**: When initializing Alaya with `alaya init`, choose your Obsidian vault path as the
+knowledge base root — this way your wiki is automatically inside your vault from day one.
+
 ---
 
 ## Default Personas (8 included)
@@ -255,6 +270,9 @@ alaya-pkg/
 │   └── philosophy/
 │       ├── philosophy_category.md
 │       └── Consciousness-Theory.md
+├── raw/                  ← Source documents (PDF, papers, raw notes)
+│   ├── my-paper.pdf      ← Original files linked to wiki cards
+│   └── ...               ← "深读 {card_name}" to look up originals
 └── alaya/                ← Runtime system files
     ├── config.json       ← System configuration (3-system partitioned)
     ├── .index_metadata.json  ← Build timestamps + stale description tracking
@@ -489,6 +507,20 @@ Agent：⚛ "好，让我把术语砍掉……"
 Agent：🏛️ "但'to attend'到底是什么意思？让我们追问……"
        [同一知识，完全不同的视角]
 ```
+
+### 配合 Obsidian 可视化（强烈推荐）
+
+识海的 wiki 使用 `[[wikilinks]]` 格式——与 [Obsidian](https://obsidian.md) 完全兼容。
+
+1. 下载 [Obsidian](https://obsidian.md/download)（免费）
+2. **"Open folder as vault"** → 选择你的知识库根目录（包含 `wiki/` 的那个目录）
+3. 点击右上角 **Graph View** → 所有卡片和关联关系以图谱形式呈现
+
+你的 wiki 卡片、类别层级和交叉引用都会出现在 Obsidian 的图谱视图中。
+这是可视化管理识海知识库的推荐方式。
+
+**小贴士**：在初始化识海时，选择 Obsidian Vault 路径作为知识库根目录，
+这样你的 wiki 从第一天起就自动在 vault 里了。
 
 ---
 

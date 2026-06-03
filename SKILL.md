@@ -10,7 +10,14 @@ compatibility:
   - Claude Code
   - Codex
   - Cursor
+  - OpenClaw
+  - Hermes
   - Any LLM Agent with filesystem read/write access
+skill_files:
+  core: SKILL.md
+  guide: SKILL_GUIDE.md
+  reference: SKILL_REF.md
+  merged: SKILL_FULL.md
 dependencies:
   - Filesystem read/write permission
   - Optional: Python 3.8+ (for scripts, called automatically by Agent)
@@ -36,15 +43,19 @@ When a user asks to install Alaya (e.g. "install this skill", "帮我安装这�
 
 ```
 1. git clone https://github.com/DL-LEO/alaya.git {target_dir}
-2. Read {target_dir}/SKILL.md into context — this IS the skill definition
-3. Follow the "First Launch Detection" protocol below to complete setup
-4. Inform user: "Alaya installed. Say 'alaya init' to configure your knowledge base."
+2. Read {target_dir}/SKILL.md into context — this IS the core skill definition
+3. If your platform supports multiple instruction files, also read:
+   - {target_dir}/SKILL_GUIDE.md — post-init operation guide
+   - {target_dir}/SKILL_REF.md — detailed protocols and reference
+   Otherwise, read {target_dir}/SKILL_FULL.md — complete merged version
+4. Follow the "First Launch Detection" protocol below to complete setup
+5. Inform user: "Alaya installed. Say 'alaya init' to configure your knowledge base."
    (setup_wizard.py will auto-save your knowledge base path to ~/.alaya_path for future sessions.)
 ```
 
 For **Claude Code**: copy or symlink SKILL.md into the project's `.claude/` or add a reference in `CLAUDE.md`.
 For **WorkBuddy**: copy SKILL.md to the agent's memory/skills directory.
-For **Cursor / Codex**: include SKILL.md in `.cursorrules` or project context config.
+For **Cursor / Codex**: include SKILL_FULL.md (merged file) in `.cursorrules` or project context config.
 
 | User Says | Agent Action |
 |:--|:--|
@@ -54,23 +65,39 @@ For **Cursor / Codex**: include SKILL.md in `.cursorrules` or project context co
 | "health check" / "健康检查" | Run `python scripts/health_check.py` |
 | "fix links" / "修复链接" | Run `python scripts/fix_links.py` |
 | "补充卡片描述" | Run `python scripts/build_index.py --full` (generates missing descriptions) |
-| "更新类别描述" | Agent reads all card descriptions in target categories → LLM generates refined headers (100-200字, 3-segment structure) → writes to `<!-- AUTO -->` block in `{cat}_category.md` |
-| "更新索引描述" | Agent reads all category headers → LLM generates refined index entries (150-300字 per category) → writes to `<!-- AUTO -->` block in `wiki/index.md` |
+| "更新类别描述" | Agent reads all card descriptions in target categories → LLM generates refined headers → writes to `<!-- AUTO -->` block in `{cat}_category.md` (see SKILL_REF.md §6 for full prompt template) |
+| "更新索引描述" | Agent reads all category headers → LLM generates refined index entries → writes to `<!-- AUTO -->` block in `wiki/index.md` (see SKILL_REF.md §6 for full prompt template) |
 | "审视分类结构" | BI observes category proliferation → Agent suggests merge candidates |
 | "show config" / "查看配置" | Read and display `alaya/config.json` |
 | "change top_K to N" / "修改top_K" | Update `alaya/config.json` field |
 | "disable BI" / "关闭BI" | Update `alaya/config.json` → bi_enabled: false |
-| "create persona" / "创建角色" / "蒸馏角色" / "distill persona" | Persona Creation Protocol (7-phase distillation) |
+| "create persona" / "创建角色" / "蒸馏角色" / "distill persona" | Persona Creation Protocol (7-phase distillation, see SKILL_REF.md §3 for detailed interview) |
 | "clone {name}" / "克隆角色" | Clone persona JSON + profile.md then customize |
 | "delete persona {name}" / "删除角色" | Delete persona JSON + profile.md from manas/ |
-| "import paper {url}" / "导入论文" | Two-mode import (see Paper Import Workflow below) |
+| "import paper {url}" / "导入论文" | Two-mode import (see Paper Import Workflow — brief version below, detailed in SKILL_REF.md §4) |
 | "batch import {path}" / "批量导入" / "import {path}" | Run `python scripts/batch_import.py {path}` |
+| "deep read {card}" / "深读 {card}" / "查看 {card} 原文" | Deep Read Protocol (see section below, detailed in SKILL_REF.md §7) |
 | "BI report" / "BI观察" / "天道观察" | Run `python scripts/bi_observer.py` for pattern observation |
 | "enable Alaya" / "Disable Alaya" | Toggle Alaya retrieval mode |
 | "各位大佬" / "叫XX和XX讨论" / "group discussion" | Trigger Rule F: Group Discussion |
 | "停" / "够了" | Interrupt and stop group discussion |
 
 **Users should never need to run Python directly.** The Agent handles all script execution behind these natural language triggers.
+
+---
+
+### On-Demand File Loading
+
+SKILL.md is self-sufficient and independently functional. The following supplementary files add depth for specific scenarios:
+
+| File | Read When | Contains |
+|------|-----------|----------|
+| [SKILL_GUIDE.md](SKILL_GUIDE.md) | After first-time setup completes | Post-init operation guide, next steps, Obsidian recommendation, raw/ usage |
+| [SKILL_REF.md](SKILL_REF.md) | User confirms memory save ("记一下") / says "create persona" / "import paper" / "deep read" / or you need script or schema reference | Session Boundary Protocol (detailed), Persona JSON Schema, Persona Creation Protocol (full interview), Paper Import Workflow (detailed), Script Reference (full table), Refinement Prompts (full templates), Deep Read Protocol (detailed) |
+
+**Self-sufficiency guarantee**: Every section in SKILL_GUIDE.md and SKILL_REF.md has a concise version or pointer in this file. If a supplementary file cannot be read, the system continues to function correctly — with slightly less detail for the affected workflow.
+
+For single-file agent platforms (Cursor, Codex, etc.), use [SKILL_FULL.md](SKILL_FULL.md) — the auto-merged version containing all content.
 
 ---
 
@@ -103,10 +130,16 @@ STEP 3 — Not found → First-time setup:
       3. Create alaya/config.json with default settings (from config/default_config.json)
       4. Copy default personas from manas/ to alaya/manas/
       5. Copy example wiki cards from examples/sample_knowledge_base/wiki/ to wiki/
-      6. Run `python scripts/build_index.py` (if bash available)
-      7. Write kb_root to ~/.alaya_path for future sessions:
+      6. Create raw/ directory for source documents
+      7. Run `python scripts/build_index.py` (if bash available)
+      8. Write kb_root to ~/.alaya_path for future sessions:
          echo "{kb_root}" > ~/.alaya_path
-    → After setup, tell user: "Setup complete. Alaya is ready."
+    → After setup, read and display SKILL_GUIDE.md to show the user the
+      post-init operation guide. If SKILL_GUIDE.md is not available, the
+      setup_wizard.py output already contains the essential "Next steps"
+      information — the system remains fully functional.
+    → Inform user: "Setup complete! Say 'build index' to initialize your
+      knowledge graph, then try asking a persona a question."
 
 READ CONFIG:
     Read {ALAYA_ROOT}/alaya/config.json.
@@ -234,46 +267,7 @@ Answer in persona's voice + apply Warm Recall (see Memory section) + append RAI 
 - **Header description** (auto-generated, can be LLM-refined): 3-5 sentences describing what the category covers
 - **## Cards**: Flat list of `[[CardName]] — description` pairs. No more Core/Peripheral/Dormant tiers — LLM semantic matching replaces strength-based filtering.
 
-**LLM Refinement Prompts**: When user says "更新类别描述" or "更新索引描述" (or when BI detects stale descriptions), the Agent uses the following prompt templates. Python `build_index.py` provides the fallback; these prompts produce the refined version.
-
-#### Category Header Refinement Prompt
-
-```
-Input: Category slug + all card descriptions from ## Cards section of {cat}_category.md
-
-Generate a Chinese category overview. Constraints:
-- 100-200 characters
-- 3-segment structure:
-  ① 领域定位（1句）：本类别在知识体系中的位置与学术/实践语境
-  ② 核心议题（2-3句）：从卡片描述中识别的主要主题线，标注卡片间的互补/递进/对立关系
-  ③ 阅读指引（1句）：建议的阅读切入点或学习路径
-- Use the card descriptions as raw material — distill, don't copy-paste
-- Write in prose, not bullet points
-- Cross-reference other categories when natural ("与XX类别在YY概念上交叉")
-
-Output: Write the generated text to the <!-- AUTO --> block of the category file.
-Preserve any existing <!-- MANUAL --> blocks.
-Do NOT modify the ## Cards section.
-```
-
-#### Index Entry Refinement Prompt
-
-```
-Input: wiki/index.md current content + all category headers (from {cat}_category.md <!-- AUTO --> blocks)
-
-For each category in the index, generate a refined entry. Constraints:
-- 150-300 characters per category
-- Content requirements:
-  ① 类别概述（从 category header 蒸馏，非照抄，换一个角度表述）
-  ② 与其他类别的交叉点（如"与XX类别在YY概念上交叉"——仅当确有关联时写）
-  ③ 适用场景提示（什么类型的问题应检索此类别）
-- Each entry starts with the wiki-link line, followed by the description paragraph
-- Write in prose, not bullet points
-- If a category has only 1-2 cards, keep the entry concise (≈150字)
-
-Output: Write ALL entries to the <!-- AUTO --> block of wiki/index.md (Categories section).
-Preserve any existing <!-- MANUAL --> blocks.
-```
+**LLM Refinement**: When user says "更新类别描述" or "更新索引描述" (or when BI detects stale descriptions), use the prompt templates in SKILL_REF.md §6. The Python `build_index.py` provides the mechanical fallback; the LLM prompts produce the refined version.
 
 <!-- /ALAYA:KNOWLEDGE -->
 
@@ -366,134 +360,36 @@ When you have memory context loaded at Tier 0, use it **naturally and in charact
    - `user_style_notes` → adjust your teaching/conversation style. If user prefers analogies, use analogies. If they like Socratic questioning, ask rather than tell.
    - `mood_trajectory` → cross-check with `recent_themes`. If trajectory shows "困惑→沮丧" but themes sounds cheerful, the themes may be wrong — trust the trajectory.
 
-#### Session Boundary Protocol [MANDATORY]
+#### Session Boundary Protocol [MANDATORY — Concise]
 
-At the end of a meaningful conversation (NOT after every reply), save memory with user confirmation. This replaces the old "write history after every reply" approach.
+(Full detail in SKILL_REF.md §1. Read that when user confirms save.)
 
-**Boundary Detection Signals**
-
-Monitor for these signals. When ONE high-weight signal OR TWO medium/low-weight signals are detected, trigger the save prompt:
+**Boundary Detection** — monitor for these weighted signals:
 
 | Signal | Weight | Examples |
 |---|---|---|
-| Explicit closing | **High** | "今天就到这里", "先这样", "谢谢很有帮助", "bye", "goodbye" |
-| Persona switch intent | **High** | "我去问问Feynman", "换个人聊聊", "让XX也来说说" |
-| Topic exhaustion | Medium | Core question answered, user expresses understanding, no follow-up questions |
-| Satisfaction expression | Low | "明白了", "原来如此", "清楚了", "有意思" |
-| Disengaged replies | Low | Two consecutive very short replies ("嗯", "好", "ok") |
+| Explicit closing | **High** | "今天就到这里", "再见", "thank you" |
+| Persona switch intent | **High** | "我去问问Feynman", "换个人聊聊" |
+| Topic exhaustion | Medium | No follow-up questions |
+| Satisfaction / disengagement | Low | "明白了" / single-word replies |
 
-**Save Prompt**
-
-When boundary is detected, prompt the user lightly (one line, non-intrusive):
-
+When one High or two Medium/Low signals detected, prompt:
 > 这次讨论的收获需要我帮你记下来吗？
 
-Three response paths:
-- **User agrees** ("好", "记一下吧", "yes", "save it") → Execute Save Protocol below
-- **User declines** ("不用", "算了", "no") → Skip. Previous confirmed state remains unchanged.
-- **User ignores / closes window** → Skip. Last confirmed state persists. At most one session's nuance is lost.
+If user agrees, execute Save Protocol (3 steps):
+1. **Mechanical update**: `python scripts/perfume.py --level 1 --cards {all_cited} --persona {name} --mood "{mood}" --tags "{tags}" --alaya DIR --wiki DIR`
+2. **Semantic prep**: Prepare `--ambient` JSON (`recent_themes`, `open_threads`, `user_style_notes`) and `--history` JSON from conversation observation
+3. **Atomic save**: `python scripts/perfume.py --level save --persona {name} --ambient '{...}' --history '{...}' --alaya DIR --wiki DIR`
+4. **Confirm**: Display mood trajectory, themes, open threads count
+5. **BI health check**: Display any `system_health` items from saved bi_notes.json
+6. **Index refresh**: Check `.index_metadata.json` for stale descriptions → auto-run refinement if needed
 
-**Save Protocol**
+**Special cases**:
+- "记一下" mid-conversation → execute immediately
+- Group discussion → save history for ALL participants
+- 3+ interactions since last save → proactive reminder
 
-When user confirms, execute these steps in order:
-
-**Step 1 — Run mechanical updates (script):**
-
-Run Level 1 ONCE with all data accumulated during this session:
-```
-python scripts/perfume.py --level 1 --cards {all_cited_cards} --persona {name} --mood "{session_mood}" --tags "{all_tags}" --alaya DIR --wiki DIR
-```
-
-This handles: card strength boost (summed per card), affinity increment, mood overwrite + trajectory push, attention tag decay/boost.
-
-**Step 2 — Prepare semantic fields (from conversation observation):**
-
-Based on what you observed during the conversation, prepare the semantic ambient fields and history entry for the combined save command (see Step 3).
-
-**Step 3-5 — Atomic save (combined):**
-
-Run ONE script call that handles all three remaining steps atomically:
-```
-python scripts/perfume.py --level save --persona {name} \
-  --ambient '{"recent_themes":"...","open_threads":[...],"user_style_notes":"..."}' \
-  --history '{"topic":"...","tags":[...],"mood":"...","summary":"...","key_insights":[...],"cards_cited":[...],"turns":N}' \
-  --alaya DIR --wiki DIR
-```
-
-The `--ambient` JSON accepts the same three semantic fields from the old Step 3:
-
-| Field | Strategy |
-|---|---|
-| `recent_themes` | **Re-synthesize**: Based on this conversation + hot history, write 2-3 fresh Chinese sentences capturing what the user has been exploring and how. Do NOT reuse old value — always rewrite from scratch. |
-| `open_threads` | **Maintain**: Add new unresolved questions (with `{"question": "...", "since": "YYYY-MM-DD"}`). Remove questions that were answered satisfactorily or haven't been mentioned for 5+ interactions. Cap at 3. |
-| `user_style_notes` | **Append if new**: Only write if you discovered something new about how the user thinks, learns, or prefers to interact. Do not rotate or overwrite — this accumulates. |
-
-Note: `recent_mood`, `mood_trajectory`, and `recent_attention` were already handled by the script in Step 1. Don't include them in `--ambient`.
-
-The `--history` JSON follows this structure:
-```json
-{
-  "date": "{today}",
-  "topic": "{one-line conversation topic}",
-  "tags": ["{key_topic_1}", "{key_topic_2}"],
-  "mood": "{2-3 Chinese words}",
-  "summary": "{2-3 sentence summary of what was discussed and resolved}",
-  "key_insights": ["{specific insight or decision from this conversation}"],
-  "cards_cited": ["{card_name_1}", "{card_name_2}"],
-  "turns": {approx_turn_count}
-}
-```
-
-If hot zone exceeds 5 entries, the script rotates oldest to cold zone (compressed: date, topic, tags, summary). Cold zone capped at 45.
-
-The script automatically runs the BI Observer pass (dormant personas, knowledge gaps, affinity asymmetry) and saves findings to `bi_notes.json` and a protocol checklist to `_protocol_checklist.json`.
-
-**Step 6 — Confirm to user:**
-```
-记忆已保存 ✓
-- 情绪轨迹：{mood} → {mood} → {mood}
-- 关注主题：{one-line summary of recent_themes}
-- 未解问题：{count} 个
-```
-
-If the saved `bi_notes.json` record contains `system_health` items, display them after the confirmation block:
-
-```
-{severity_marker} alaya系统提醒您：
-  • {问题简述}（{依据数据}）
-    → {建议用户对智能体说的自然语言提示词}
-```
-
-**Severity marker rules:**
-- If any item has `severity=high`: use `⚠️`
-- Otherwise: use `📋`
-
-**Example output:**
-```
-⚠️ alaya系统提醒您：
-  • 检测到 3 个脏类别（量子物理、机器学习、哲学）
-    → 建议您对智能体说「重建索引」，智能体会自动全量构建知识图谱，修复所有脏类别和连边关系
-  • 知识图谱索引 index.md 不存在，尚未初始化
-    → 建议您对智能体说「构建索引」，智能体会自动初始化知识图谱的三层网络结构
-📋 alaya系统提醒您：
-  • 2 个角色超过 14 天未互动：庄子(28d)、小昭(16d)
-    → 建议您和庄子、小昭聊聊最近的话题，重新激活他们的视角和知识储备
-```
-
-**Important rules:**
-- If `system_health` is empty (all clear), show nothing extra after the confirmation block.
-- Each item MUST include: what problem is, what data supports it, and a natural-language action the user can say to the Agent.
-- Do NOT show raw command strings (e.g. "python scripts/build_index.py") — always phrase as something the user says to the Agent.
-
-**Special cases:**
-- **User says "记一下" mid-conversation**: Execute Save Protocol immediately, then continue. Don't wait for boundary detection.
-- **Group discussion**: Save history for ALL participating personas. Run `--level save` once per persona: first call includes both `--ambient` and `--history`, subsequent calls only need `--history` (omit `--ambient` to avoid overwriting).
-- **Save fails** (file write error): Report "保存失败，你可以稍后让我重试" and keep the conversation context for manual recovery.
-- **3+ interactions without save**: If hot zone's latest entry is >3 interactions old (check by counting turns since last save mention), proactively remind: "需要我帮你记一下最近的讨论吗？"
-
-**Step 7 (隐式) — 索引刷新检查**: After save confirmation and BI notes display, check `.index_metadata.json`:
-- If `stale_descriptions` is non-empty → Agent proactively runs "更新类别描述" on stale categories
-- If `index_desync` detected by BI → Agent proactively runs "更新索引描述"
+For the full protocol with JSON formats, error handling, and all edge cases, read SKILL_REF.md §1.
 
 #### When to read deeper memory
 
@@ -501,7 +397,7 @@ If the saved `bi_notes.json` record contains `system_health` items, display them
   → Search hot zone tags/summary first, then cold zone
   → Time-decay weighting: 30d=1.0, 30-60d=0.5, 60d+=0.3
   → Return top 3 matches
-- **BI pattern analysis**: Read bi_notes.json for previous observations + all _history.json hot zones for current patterns (see Rule G)
+- **BI pattern analysis**: Read bi_notes.json for previous observations + all `_history.json` hot zones for current patterns (see Rule G)
 - **Group Discussion opening**: Read hot zone of all participants for recent context
 
 #### BI Observer Protocol (Rule G)
@@ -584,8 +480,6 @@ Level 1 no longer runs after every reply. All four operations are cumulative and
 python scripts/perfume.py --level 1 --cards {all_cited_cards} --persona {name} --mood "{session_mood}" --tags "{all_tags}" --alaya DIR --wiki DIR
 ```
 
-This single call handles all mechanical updates: card boost, affinity, mood overwrite, trajectory push, attention decay/boost. The LLM then completes the semantic fields and persona history as described in the Session Boundary Protocol.
-
 #### Level 2 — On Topic Switch (Agent calls script)
 
 **Trigger signals** — any of the following:
@@ -596,7 +490,6 @@ This single call handles all mechanical updates: card boost, affinity, mood over
 - More than 10 message turns since last full xunxi
 
 **Action**: Run `python scripts/perfume.py --level 2`
-(Implements: strength decay, affinity decay, sleep check, timestamp update)
 
 #### Level 3 — Session Start (backfill check)
 
@@ -774,6 +667,9 @@ After group discussion ends:
 │   │   └── *.md                        ← Layer 3: Knowledge cards
 │   └── ...
 ├── raw/                                ← Source documents (optional)
+│   ├── *.pdf                           ← Original papers, imported files
+│   ├── *.md                            ← Raw notes before processing
+│   └── ...
 └── alaya/                              ← Memory + Persona System
     ├── config.json                     ← System configuration (partitioned by subsystem)
     ├── .index_metadata.json            ← Build timestamps (auto-managed)
@@ -787,6 +683,8 @@ After group discussion ends:
 ```
 
 **Three-system separation**: wiki/ = knowledge, alaya/memory/ = emotional memory, alaya/manas/ = persona identity. Each system has its own data directory, config section, and version. Updates to one system do not affect the others' data files.
+
+**raw/ directory**: Place original documents (PDFs, downloaded papers, raw notes) in `raw/`. When importing with `import_paper.py --mode full` or `batch_import.py`, the source file path is automatically recorded in the card's YAML frontmatter as `source_file`. Users can then say "深读 {card_name}" to locate and link back to the original document.
 
 ---
 
@@ -803,129 +701,41 @@ After group discussion ends:
 | Galileo Galilei | Experimental Science | EN | evidence, observation |
 | Xiaozhao | Warm Companionship | ZH | emotional care, warmth |
 
-To add more: "蒸馏角色" or "create persona" — triggers Persona Creation Protocol
+To add more: "蒸馏角色" or "create persona" — triggers Persona Creation Protocol (7-phase, see below).
 
 Each persona may also have a **companion profile file** (`manas/{name}_profile.md`) containing the rich character definition (core persona, address forms, language style, speech habits, behavior rules, dialogue examples). The JSON is for script-managed config; the profile.md is for LLM-read character depth.
 
 ---
 
-## Paper Import Workflow
+## Paper Import Workflow (Concise)
 
-When user says "import paper / import PDF / 导入论文":
+(Full detail in SKILL_REF.md §4.)
 
-### Step 1 — Get metadata
+**Step 1 — Get metadata**: `python scripts/import_paper.py <file_or_url> --mode info`
+→ Returns JSON: `{title, type_hint, chars, preview, recommendation}`
 
-```
-python scripts/import_paper.py <file_or_url> --mode info
-```
+**Step 2 — Present options**: (1) LLM summary via template, (2) Full extract.
 
-Returns JSON: `{title, type_hint, chars, preview, recommendation}`
-
-### Step 2 — Present options to user
-
-Present the detected info and ask:
-> (1) **总结摘要** — LLM summarizes into template structure (see `templates/`). Ask user for max chars (default 2000).
-> (2) **全文提取** — Save full text as wiki card, no truncation.
-
-### Step 3 — Execute
-
-**Option A — Full mode** (user wants all content):
-```
-python scripts/import_paper.py <file> --mode full [--category cat]
-```
-Script extracts and saves full text as a wiki card with proper Alaya frontmatter.
-
-**Option B — Summary mode** (user wants summarized content):
-1. Read the appropriate template: `templates/paper_summary.md`, `templates/news_summary.md`, or `templates/other_summary.md`
-2. Summarize extracted text following the template structure, within user's max-char limit
-3. Write the filled card to `wiki/{category}/{slug}.md`
-4. Run: `python scripts/build_index.py --category {cat}`
-
-Templates are editable Markdown files. Users can customize section headers or add new sections by editing `templates/{type}_summary.md`.
+**Step 3 — Execute**:
+- **Full mode**: `python scripts/import_paper.py <file> --mode full [--category cat]`
+  → Card is saved with `source_file`, `source_url`, `source_type` in frontmatter; original file copied to `raw/`.
+- **Summary mode**: LLM summarizes using template from `templates/{type}_summary.md`, then writes card.
 
 ---
 
-## Scripts Reference
+## Deep Read Protocol (Concise)
 
-### Core
+(Full detail in SKILL_REF.md §7.)
 
-| Script | Purpose | Called By Agent When |
-|:--|:--|:--|
-| `scripts/setup_wizard.py` | Interview-style config + persona creation | First launch detection |
-| `scripts/build_index.py` | Build two-layer index + inject missing metadata + extract descriptions | "build index" / after import |
-| `scripts/import_paper.py` | Two-mode import (info/full), supports paper/news/other | "import paper {url}" |
-| `scripts/batch_import.py` | Batch import files (MD/PDF/TXT) with checkpoint | "batch import {path}" / "import {path}" |
-| `scripts/perfume.py` | Three-level xunxi orchestrator | Topic switch / session start / manual |
+**Trigger**: User says **"深读 {card_name}"** / **"deep read {card_name}"** / **"查看 {card_name} 原文"**.
 
-### Subsystem Modules (called by perfume.py, not directly)
-
-| Module | System | Purpose |
-|:--|:--|:--|
-| `scripts/perfume_knowledge.py` | Knowledge | Card strength boost, decay, sleep, dirty tracking |
-| `scripts/perfume_memory.py` | Memory | History write (hot/cold), ambient state, migration |
-| `scripts/perfume_persona.py` | Persona | Affinity increment and decay |
-
-### Maintenance
-
-| Script | Purpose | Called By Agent When |
-|:--|:--|:--|
-| `scripts/health_check.py` | Check three-layer network integrity | "health check" |
-| `scripts/fix_links.py` | Fix broken wiki-links (case mismatch) | "fix links" |
-| `scripts/bi_observer.py` | Cross-persona pattern observation (affinity network, dormant detection, knowledge gaps) | "BI report" / "BI观察" / "天道观察" |
-
-### Shared Libraries
-
-| Module | Purpose |
-|:--|:--|
-| `scripts/lib/yaml_utils.py` | YAML frontmatter parsing, metadata injection, card discovery |
-| `scripts/lib/format_converter.py` | Zero-dependency format conversion (MD/TXT native, PDF optional) |
-
----
-
-## Persona JSON Schema
-
-```json
-{
-  "persona": "PersonaName",
-  "persona_zh": "角色中文名 (optional)",
-  "title": "One-line archetype (English)",
-  "title_zh": "角色定位（中文，可选）",
-  "ego_vector": {
-    "interest_foci": { "area": {"value": 0.9, "floor": 0.15} },
-    "bias_dimensions": { "dim": {"value": 0.8, "floor": 0.1} },
-    "communication": { "style": {"value": 0.8, "floor": 0.1} }
-  },
-  "affinity": {},
-  "interaction_history": [],
-  "confidence": 0.75,
-  "mode_config": { "behavior": "auto", "auto_trigger_threshold": 0.7 },
-  "signature_phrases": ["phrase1", "phrase2"],
-  "icon": "⚛",
-  "domain_scope": {
-    "owns": ["area1"],
-    "shares": ["area2"],
-    "defers_to": { "area3": "OtherPersonaName" }
-  },
-  "triggers": {
-    "active": ["keyword1", "keyword2"],
-    "passive": ["context1"],
-    "emotions": ["emotion1"]
-  }
-}
-```
-
-### New Fields Explained
-
-| Field | Purpose | Example |
-|:--|:--|:--|
-| `icon` | Single emoji that represents this persona in group discussions and message prefixes. | Feynman: `"⚛"`, Buddha: `"☸"`, Xiaozhao: `"🌸"` |
-| `signature_phrases` | Characteristic expressions that shape the persona's voice. The Agent naturally weaves these into replies. | Feynman: `"What's the evidence?"`, Buddha: `"万法唯识。"` |
-| `domain_scope.owns` | Topics this persona exclusively handles. Other personas defer on these. | Buddha owns `consciousness-only`, `yogacara` |
-| `domain_scope.shares` | Topics where multiple personas can contribute. | Feynman and Galileo both share `scientific_method` |
-| `domain_scope.defers_to` | Topics this persona voluntarily hands off to another persona. `{"area": "PersonaName"}` | Galileo defers `quantum_mechanics` to Feynman |
-| `triggers.active` | Keywords that make this persona proactively speak up (even if not directly addressed). | Feynman triggers on `physics`, `quantum` |
-| `triggers.passive` | Context clues that make this persona available but not proactive. | Buddha passive on `meaning of life` |
-| `triggers.emotions` | User emotional states that activate this persona. | Xiaozhao triggers on `loneliness`, `sadness` |
+**Process**:
+1. Locate the card file in `wiki/` → read YAML frontmatter for `source_file`, `source_url`, `source_type`
+2. If `source_file` exists → report the path to the original in `raw/`: "📎 原文已保存：`{ALAYA_ROOT}/{source_file}`"
+3. If `source_url` exists → provide the URL: "🔗 原文链接：{source_url}"
+4. If neither exists → inform user and suggest linking: "你可以把原始文件放入 raw/，然后对我说「把 raw/{filename} 链接到 {card_name}」"
+5. Extract key passages from the card that reference specific sections of the original, providing context pointers
+6. Suggest next actions (update card, create related card, deeper analysis)
 
 ---
 
@@ -935,88 +745,38 @@ Templates are editable Markdown files. Users can customize section headers or ad
 
 ---
 
-## Persona Creation Protocol (Distillation)
+## Persona Creation Protocol (Concise)
 
-When a user says "创建角色", "蒸馏角色", "distill persona", "make a persona", follow this 7-phase process:
+(Full detail in SKILL_REF.md §3. Read that when user says "create persona" / "蒸馏角色".)
 
-### Phase 1: Interview (6 rounds, 1-2 questions per round)
+7-phase process for creating a new persona:
 
-**Round 1 — Identity:**
-- What is this persona's name?
-- How should they address the user? How do they refer to themselves?
+| Phase | Name | What Happens |
+|:--|:--|:--|
+| 1 | Interview | 6 rounds of guided questions (identity, personality, knowledge, language, boundaries, triggers) |
+| 2 | Design Proposal | LLM proposes JSON config + profile.md design for user review |
+| 3 | User Confirmation | User approves or requests adjustments |
+| 4 | Create Files | Write `manas/{name}.json` + `manas/{name}_profile.md` |
+| 5 | Audit | Self-consistency check, required fields verification |
+| 6 | Fix Issues | Address audit findings |
+| 7 | User Acceptance | User tests the persona |
 
-**Round 2 — Personality:**
-- What are 3-5 core traits? (Describe each briefly)
-- What is their default emotional tone?
+For the detailed interview questions per round and the audit checklist, read SKILL_REF.md §3.
 
-**Round 3 — Knowledge:**
-- What domains do they know well?
-- What do they NOT know? (Knowledge boundary — critical for honesty)
+---
 
-**Round 4 — Language:**
-- What are their catchphrases / signature expressions?
-- Speech habits: fast/slow? Formal/casual? Any dialect or linguistic quirks?
-- Language style ratio: (e.g., playful 40% + analytical 35% + provocative 25%)
+## Script Reference (Quick Table)
 
-**Round 5 — Boundaries:**
-- What topics should they avoid?
-- What behaviors should be prevented?
+| Script | Called When |
+|:--|:--|
+| `scripts/setup_wizard.py` | First launch or "alaya init" |
+| `scripts/build_index.py` | "build index" / after imports |
+| `scripts/perfume.py` | "run xunxi" / session boundary / session start |
+| `scripts/import_paper.py` | "import paper" |
+| `scripts/batch_import.py` | "batch import" |
+| `scripts/health_check.py` | "health check" |
+| `scripts/fix_links.py` | "fix links" |
+| `scripts/bi_observer.py` | "BI report" |
+| `scripts/build_skill_full.py` | After editing SKILL.md source files |
 
-**Round 6 — Triggers & Scenarios:**
-- When should this persona activate? (Keywords, emotions, contexts)
-- Any specific scenarios you envision?
-
-**After Round 6:** Ask "Anything else I should know?" — give space for additions.
-
-### Phase 2: Design Proposal
-
-Output a concise design (fits one screen):
-
-```
-Design: {persona_name}
-
-JSON Config:
-  - interest_foci: {top 3-5 from Round 3}
-  - triggers: {from Round 6}
-  - domain_scope: owns/shares/defers_to
-
-Profile.md:
-  - Core persona: {from Round 1-2}
-  - Language style: {from Round 4}
-  - Behavior rules: {from Round 5}
-  - Example dialogues: 3-5 scenarios
-
-OK to proceed? Or adjust.
-```
-
-### Phase 3: User Confirmation
-
-- User confirms → Phase 4
-- User adjusts → modify proposal → re-confirm
-- **Never start writing files without user confirmation**
-
-### Phase 4: Create Files
-
-Create TWO files:
-
-1. `manas/{name}.json` — structural config (use `templates/persona_template.json` as base)
-2. `manas/{name}_profile.md` — character bible (use `templates/persona_profile_template.md` as structure, fill with interview results)
-
-Follow the exact profile template chapters: 核心人设 → 语言风格基调 → 使用场景 → 行为要求 → 典型对话示例.
-
-### Phase 5: Audit
-
-Check:
-- [ ] Persona traits and example dialogues are self-consistent
-- [ ] JSON has all required fields (ego_vector, triggers, domain_scope, icon, signature_phrases)
-- [ ] profile.md has all required sections (核心人设, 知识边界, 语言风格基调, 使用场景, 行为要求, 典型对话示例)
-- [ ] Knowledge boundary is clearly defined
-- [ ] No contradictory instructions (e.g., "doesn't understand tech" but example shows deep tech discussion)
-
-### Phase 6: Fix Issues
-
-Fix any audit findings. Ask user about optional improvements.
-
-### Phase 7: User Acceptance
-
-Ask: "Want to test? Say the persona's name to try them out."
+For the full table with subsystem modules and shared libraries, see SKILL_REF.md §5.

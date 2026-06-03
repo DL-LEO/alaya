@@ -48,10 +48,14 @@ Just say:
 > **"alaya init"** or **"启用识海"**
 
 The Agent will automatically:
-- Ask you where your knowledge base lives
+- Ask you where your knowledge base lives (with option to use Obsidian vault)
 - Set up the `alaya/` directory with default config
+- Create `raw/` directory for source documents
 - Copy 8 default personas (Manas) with character profiles
-- Ask you to organize knowledge cards into `wiki/{category}/` subfolders
+- Guide you through next steps after setup
+
+> **💡 Tip**: If you use [Obsidian](https://obsidian.md), choose your Obsidian vault path
+> during setup — your wiki cards will appear in Obsidian's Graph View automatically.
 
 ### 3. Start Cultivating
 
