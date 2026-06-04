@@ -12,12 +12,15 @@ def _today_str() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
-def write_history(memory_dir, persona_name, entry, hot_limit=5, cold_limit=45):
-    """Write an interaction entry to persona's history file (hot/cold dual-zone)."""
+def write_history(memory_dir, persona_key, entry, hot_limit=5, cold_limit=45):
+    """Write an interaction entry to persona's history file (hot/cold dual-zone).
+
+    persona_key should be the canonical key (JSON filename base, e.g. "feynman").
+    Callers should resolve display names via persona_key() in lib/yaml_utils before calling.
+    """
     os.makedirs(memory_dir, exist_ok=True)
 
-    persona_slug = persona_name.lower().replace(" ", "_").replace("'", "")
-    history_path = os.path.join(memory_dir, f"{persona_slug}_history.json")
+    history_path = os.path.join(memory_dir, f"{persona_key}_history.json")
 
     history = {"hot": [], "cold": []}
     if os.path.exists(history_path):

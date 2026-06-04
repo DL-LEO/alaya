@@ -684,6 +684,14 @@ After group discussion ends:
 
 **Three-system separation**: wiki/ = knowledge, alaya/memory/ = emotional memory, alaya/manas/ = persona identity. Each system has its own data directory, config section, and version. Updates to one system do not affect the others' data files.
 
+**config.language**: The top-level `language` field in `config.json` controls the **default language for newly created personas** (used by `setup_wizard.py`). It does NOT override individual persona language settings — each persona's `language` field in their own JSON takes precedence. Language is a persona-level attribute, not a system-level one.
+
+**Persona naming convention**: Each persona has two names:
+- **Canonical key** (filename base): e.g., `feynman` — used internally as the unique identifier for file lookups, history files, affinity keys, and all script operations
+- **Display name** (`persona` field): e.g., `Richard Feynman` — shown to users in reports and UI
+
+All scripts resolve any identifier (display name, Chinese name, slug, canonical key) to the canonical key via `persona_key()` in `lib/yaml_utils.py`.
+
 **raw/ directory**: Place original documents (PDFs, downloaded papers, raw notes) in `raw/`. When importing with `import_paper.py --mode full` or `batch_import.py`, the source file path is automatically recorded in the card's YAML frontmatter as `source_file`. Users can then say "深读 {card_name}" to locate and link back to the original document.
 
 ---
@@ -692,13 +700,13 @@ After group discussion ends:
 
 | Persona | Archetype | Language | Interest Focus |
 |:--|:--|:--:|:--|
-| Audrey Hepburn | Elegant Insight | EN | humanity, aesthetics, care |
+| Audrey Hepburn | Elegant Insight | ZH | humanity, aesthetics, care |
 | Buddha | Dharma Nature | ZH | consciousness-only, wisdom |
 | Zhuangzi | Daoist Freedom | ZH | natural evolution, wu-wei |
-| Carl Jung | Depth Psychology | EN | archetypes, individuation |
-| Socrates | Philosophical Inquiry | EN | dialectic, epistemology |
-| Richard Feynman | Physical Intuition | EN | intuition, simplicity |
-| Galileo Galilei | Experimental Science | EN | evidence, observation |
+| Carl Jung | Depth Psychology | ZH | archetypes, individuation |
+| Socrates | Philosophical Inquiry | ZH | dialectic, epistemology |
+| Richard Feynman | Physical Intuition | ZH | intuition, simplicity |
+| Galileo Galilei | Experimental Science | ZH | evidence, observation |
 | Xiaozhao | Warm Companionship | ZH | emotional care, warmth |
 
 To add more: "蒸馏角色" or "create persona" — triggers Persona Creation Protocol (7-phase, see below).

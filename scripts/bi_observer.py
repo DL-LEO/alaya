@@ -45,7 +45,8 @@ def observe(alaya_dir):
 
     ambient = _read_json(os.path.join(mem_dir, "ambient.json")) or {}
 
-    personas = {}
+    personas = {}          # keyed by canonical key (filename base)
+    persona_display = {}   # canonical key -> display name
     history_last_dates = {}
     for fname in sorted(os.listdir(mn_dir)):
         if not fname.endswith(".json") or fname.endswith("_history.json"):
@@ -53,15 +54,17 @@ def observe(alaya_dir):
         data = _read_json(os.path.join(mn_dir, fname))
         if not data:
             continue
-        name = data.get("persona", fname.replace(".json", ""))
-        personas[name] = data
+        key = fname.replace(".json", "")
+        display = data.get("persona", key)
+        persona_display[key] = display
+        personas[key] = data
 
-        hist = _read_json(os.path.join(mem_dir, f"{name}_history.json"))
+        hist = _read_json(os.path.join(mem_dir, f"{key}_history.json"))
         if hist and hist.get("hot"):
             last_date = hist["hot"][-1].get("date", "")
-            history_last_dates[name] = last_date
+            history_last_dates[key] = last_date
             obs["persona_activity"].append({
-                "persona": name,
+                "persona": display,
                 "recent_topic": hist["hot"][-1].get("topic", ""),
                 "recent_mood": hist["hot"][-1].get("mood", ""),
                 "hot_count": len(hist.get("hot", [])),
@@ -69,9 +72,9 @@ def observe(alaya_dir):
                 "last_interaction": last_date
             })
         else:
-            history_last_dates[name] = None
+            history_last_dates[key] = None
             obs["persona_activity"].append({
-                "persona": name,
+                "persona": display,
                 "recent_topic": "",
                 "recent_mood": "",
                 "hot_count": 0,
@@ -80,33 +83,33 @@ def observe(alaya_dir):
             })
 
     # Affinity network insights
-    for name, data in personas.items():
+    for key, data in personas.items():
         aff = data.get("affinity", {})
-        for other, v in aff.items():
-            if other in personas and name < other:  # dedup pairs
+        for other_key, v in aff.items():
+            if other_key in personas and key < other_key:  # dedup pairs
                 score_a = v.get("score", 0) if isinstance(v, dict) else v
                 score_b = 0
-                other_aff = personas[other].get("affinity", {}).get(name, {})
+                other_aff = personas[other_key].get("affinity", {}).get(key, {})
                 if isinstance(other_aff, dict):
                     score_b = other_aff.get("score", 0)
                 avg = round((score_a + score_b) / 2, 2)
                 trend = "mutual_growing" if (score_a > 0.3 and score_b > 0.3) else \
                         "asymmetric" if abs(score_a - score_b) > 0.15 else "neutral"
                 obs["affinity_network"].append({
-                    "pair": (name, other),
+                    "pair": (persona_display[key], persona_display[other_key]),
                     "scores": (score_a, score_b),
                     "avg": avg,
                     "trend": trend
                 })
 
     # Dormant persona detection
-    for name, last_date in history_last_dates.items():
+    for key, last_date in history_last_dates.items():
         days = _days_since(last_date) if last_date else 999
         if days >= 14:
             obs["dormant"].append({
-                "persona": name,
+                "persona": persona_display[key],
                 "days_since_last": days,
-                "interest_foci": list(personas[name].get("ego_vector", {}).get("interest_foci", {}).keys())[:3]
+                "interest_foci": list(personas[key].get("ego_vector", {}).get("interest_foci", {}).keys())[:3]
             })
 
     # Knowledge gap detection
@@ -278,8 +281,19 @@ def check_health(alaya_dir, wiki_dir, config):
             "suggestion": f"建议您对智能体说「补充 {interest} 的知识卡片」，智能体会导入更多相关内容"
         })
 
+    # Build canonical key → display name mapping (for cold capacity display)
+    _mn_dir = os.path.join(alaya_dir, "manas")
+    _persona_display = {}
+    if os.path.isdir(_mn_dir):
+        for _f in os.listdir(_mn_dir):
+            if _f.endswith(".json") and not _f.endswith("_history.json"):
+                _data = _read_json(os.path.join(_mn_dir, _f))
+                if _data:
+                    _k = _f.replace(".json", "")
+                    _persona_display[_k] = _data.get("persona", _k)
+
     # Cold capacity approaching limit
-    cold_warnings = _check_cold_capacity(alaya_dir, config)
+    cold_warnings = _check_cold_capacity(alaya_dir, config, _persona_display)
     items.extend(cold_warnings)
 
     # Xunxi stale (>7 days)
@@ -411,8 +425,9 @@ def _find_interest_category_gaps(alaya_dir, wiki_dir):
     return gaps
 
 
-def _check_cold_capacity(alaya_dir, config):
+def _check_cold_capacity(alaya_dir, config, persona_display=None):
     """Check if persona cold zones are approaching their limit."""
+    persona_display = persona_display or {}
     mem_dir = os.path.join(alaya_dir, "memory")
     cold_limit = config.get("memory", {}).get("cold_limit", 45)
     warnings = []
@@ -426,12 +441,13 @@ def _check_cold_capacity(alaya_dir, config):
                 hist = json.load(f)
             cold_count = len(hist.get("cold", []))
             if cold_count >= cold_limit * 0.8:
-                persona_name = fname.replace("_history.json", "")
+                key = fname.replace("_history.json", "")
+                display = persona_display.get(key, key)
                 warnings.append({
                     "type": "cold_capacity",
                     "severity": "low",
-                    "detail": f"角色「{persona_name}」的历史冷区已达 {cold_count}/{cold_limit} 条",
-                    "suggestion": f"建议您对智能体说「整理 {persona_name} 的早期记忆」，智能体会帮您归档处理"
+                    "detail": f"角色「{display}」的历史冷区已达 {cold_count}/{cold_limit} 条",
+                    "suggestion": f"建议您对智能体说「整理 {display} 的早期记忆」，智能体会帮您归档处理"
                 })
         except (json.JSONDecodeError, IOError, KeyError):
             pass

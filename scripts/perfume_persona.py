@@ -3,13 +3,20 @@
 
 import json, os, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib.yaml_utils import persona_key
+
 
 def update_affinity(manas_dir, persona_name, increment=0.01):
-    """Update affinity: other personas gain affinity toward the active persona."""
+    """Update affinity: other personas gain affinity toward the active persona.
+
+    persona_name can be any identifier (display name, slug, canonical key).
+    It will be resolved to the canonical key internally.
+    """
     if not os.path.exists(manas_dir):
         return
 
-    persona_slug = persona_name.lower().replace(" ", "_")
+    key = persona_key(manas_dir, persona_name)
 
     for f in os.listdir(manas_dir):
         if not f.endswith(".json") or f.endswith("_history.json"):
@@ -22,15 +29,16 @@ def update_affinity(manas_dir, persona_name, increment=0.01):
             print(f"[perfume_persona] WARNING: skipping corrupt JSON: {mpath} ({e})", file=sys.stderr)
             continue
 
-        if data.get("persona", "").lower().replace(" ", "_") != persona_slug:
+        fkey = f.replace(".json", "")
+        if fkey != key:
             aff = data.setdefault("affinity", {})
-            if persona_slug not in aff:
-                aff[persona_slug] = {"score": 0.0}
-            existing = aff[persona_slug]
+            if key not in aff:
+                aff[key] = {"score": 0.0}
+            existing = aff[key]
             if isinstance(existing, dict):
                 existing["score"] = round(min(1.0, existing.get("score", 0.0) + increment), 4)
             elif isinstance(existing, (int, float)):
-                aff[persona_slug] = round(min(1.0, existing + increment), 4)
+                aff[key] = round(min(1.0, existing + increment), 4)
             with open(mpath, "w", encoding="utf-8") as fp:
                 json.dump(data, fp, ensure_ascii=False, indent=2)
 

@@ -106,6 +106,55 @@ def slugify(name):
     return s or 'untitled'
 
 
+def persona_key(manas_dir, name):
+    """Resolve any persona identifier to the canonical key (JSON filename base).
+
+    Accepts: filename base, display name, Chinese name, slugified name.
+    Resolution order:
+      1. Filename match (case-insensitive): list manas/ and find matching .json
+      2. Display name / Chinese name search across all persona JSONs
+      3. Fallback: return slugified name
+
+    Returns the canonical key (e.g. "feynman" for all of "Richard Feynman",
+    "richard_feynman", "Feynman", "费曼").
+    Uses os.listdir + case-insensitive comparison to return the ACTUAL filename
+    base, not the input — correct on case-insensitive filesystems (Windows/macOS).
+    """
+    import json as _json
+
+    if not name:
+        return name
+
+    slug = name.lower().replace(" ", "_").replace("'", "")
+    name_lower = name.lower()
+
+    if os.path.isdir(manas_dir):
+        for f in os.listdir(manas_dir):
+            if not f.endswith(".json") or f.endswith("_history.json"):
+                continue
+            key = f.replace(".json", "")
+            key_lower = key.lower()
+
+            # 1. Filename match (case-insensitive): "Feynman" matches "feynman.json"
+            if key_lower == name_lower or key_lower == slug:
+                return key
+
+            # 2. Display name / Chinese name match (read JSON content)
+            try:
+                with open(os.path.join(manas_dir, f), "r", encoding="utf-8") as fp:
+                    data = _json.load(fp)
+                display = data.get("persona", "")
+                display_zh = data.get("persona_zh", "")
+                display_slug = display.lower().replace(" ", "_").replace("'", "")
+                if display_slug == slug or display_zh == name:
+                    return key
+            except (_json.JSONDecodeError, IOError):
+                pass
+
+    # 3. Fallback: return slugified name
+    return slug
+
+
 def is_category_file(fname):
     """Check if a filename is a category file: {name}_category.md"""
     return fname.endswith('_category.md')

@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from perfume_knowledge import boost_cards, decay_all, wake_seeds, sleep_check as check_sleep
 from perfume_memory import update_ambient, migrate_from_manas, write_history, _ensure_ambient_fields
 from perfume_persona import update_affinity, decay_affinity
+from lib.yaml_utils import persona_key
 import bi_observer
 
 
@@ -270,9 +271,11 @@ def level_1(alaya_dir, wiki_dir, args, config):
     # Persona: update affinity (mechanical increment, auto)
     # --affinity-increment controls the scenario:
     #   0.01 (default) = co-chat; 0.02 = same card cited; 0.03 = cite peer's seed
+    p_key = None
     if args["persona"]:
         manas_dir = os.path.join(alaya_dir, "manas")
-        update_affinity(manas_dir, args["persona"], args.get("affinity_increment", 0.01))
+        p_key = persona_key(manas_dir, args["persona"])
+        update_affinity(manas_dir, p_key, args.get("affinity_increment", 0.01))
 
     # Memory: write persona history stub (mechanical layer)
     if args["persona"]:
@@ -289,7 +292,7 @@ def level_1(alaya_dir, wiki_dir, args, config):
         }
         hl = config.get("memory", {}).get("hot_limit", 5)
         cl = config.get("memory", {}).get("cold_limit", 45)
-        write_history(memory_dir, args["persona"], entry, hot_limit=hl, cold_limit=cl)
+        write_history(memory_dir, p_key, entry, hot_limit=hl, cold_limit=cl)
 
     # Memory: mechanical only — mood + attention decay/boost
     if args.get("mood") or args.get("tags"):
@@ -360,6 +363,9 @@ def level_save(alaya_dir, wiki_dir, args, config):
         print("Error: --persona is required for --level save")
         sys.exit(1)
 
+    manas_dir = os.path.join(alaya_dir, "manas")
+    p_key = persona_key(manas_dir, persona)
+
     memory_dir = os.path.join(alaya_dir, "memory")
     os.makedirs(memory_dir, exist_ok=True)
 
@@ -405,7 +411,7 @@ def level_save(alaya_dir, wiki_dir, args, config):
             print(f"Error: --history is not valid JSON: {e}")
             sys.exit(1)
 
-        write_history(memory_dir, persona, entry, hot_limit=hl, cold_limit=cl)
+        write_history(memory_dir, p_key, entry, hot_limit=hl, cold_limit=cl)
         print(f"  [Step 4] History written for '{persona}'")
     else:
         # Minimal fallback entry
@@ -419,7 +425,7 @@ def level_save(alaya_dir, wiki_dir, args, config):
             "cards_cited": args.get("cards", []),
             "turns": args.get("turns", 0),
         }
-        write_history(memory_dir, persona, entry, hot_limit=hl, cold_limit=cl)
+        write_history(memory_dir, p_key, entry, hot_limit=hl, cold_limit=cl)
         print(f"  [Step 4] Minimal history written for '{persona}'")
 
     # ---- Step 5: BI Observer pass + System health ----

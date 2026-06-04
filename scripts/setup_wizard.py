@@ -304,13 +304,20 @@ config = {
 }
 
 # Q2: Language
-print("\n[2/6] Language preference?")
-lang = input("  zh (Chinese) / en (English) [default: zh]: ").strip()
-if lang in ("en", "EN"):
+print("\n[2/6] System default language?")
+print("  This sets the default language for new personas and system messages.")
+print("")
+print("  1. Chinese (中文) — default")
+print("  2. English")
+print("")
+lang = input("  Choose [1/2, default: 1]: ").strip()
+if lang == "2":
     config["language"] = "en"
     print("  -> Language set to English")
 else:
-    print("  -> Language set to Chinese")
+    config["language"] = "zh"
+    print("  -> Language set to Chinese (中文)")
+print("  -> Note: Each persona can have its own language — this is just the default.")
 
 # Q3: Enable BI observer?
 print("\n[3/6] Enable BI observer? (recommended)")
@@ -390,6 +397,23 @@ if os.path.exists(package_manas):
                 copied += 1
             else:
                 skipped += 1
+
+        # Override default persona language to match user's choice (first install)
+        chosen_lang = config.get("language", "zh")
+        for f in os.listdir(dest_manas):
+            if not f.endswith(".json") or f.endswith("_history.json"):
+                continue
+            p = os.path.join(dest_manas, f)
+            try:
+                with open(p, "r", encoding="utf-8") as fp:
+                    pdata = json.load(fp)
+                if pdata.get("language") != chosen_lang:
+                    pdata["language"] = chosen_lang
+                    with open(p, "w", encoding="utf-8") as fp:
+                        json.dump(pdata, fp, ensure_ascii=False, indent=2)
+            except (json.JSONDecodeError, IOError):
+                pass
+
         json_count = sum(1 for f in default_files if f.endswith('.json'))
         profile_count = sum(1 for f in default_files if f.endswith('_profile.md'))
         if copied > 0:
@@ -437,38 +461,62 @@ print("\n" + "=" * 50)
 print("  Setup complete!")
 print(f"  Config saved to: {config_path}")
 print("=" * 50)
-print("\n📚 下一步操作 (Next steps):")
-print("")
-print("  🌐 配合 Obsidian 可视化（强烈推荐）")
-print("     下载 https://obsidian.md → Open folder as vault → 选择此目录")
-print("     点击 Graph View 即可看到整个知识图谱")
-print("")
-print("  📂 准备原始文档")
-print(f"    把论文、PDF 等原始文件放到 {kb_root}/raw/ 目录下")
-print('    然后对 Agent 说 → "批量导入 raw/"')
-print("")
-print("  📚 构建知识库")
-print('    "帮我构建索引"        → 扫描 wiki/ 并构建三层知识图谱')
-print('    "导入这篇论文"        → 导入论文 PDF 或 arXiv 链接')
-print('    "批量导入 raw/"       → 从 raw/ 文件夹批量导入文档')
-print('    "补充卡片描述"        → 自动提取缺失的卡片描述')
-print('    "更新类别描述"        → LLM 重新生成类别头部描述')
-print('    "更新索引描述"        → LLM 重新生成 index.md 各分类入口描述')
-print("")
-print("  👤 角色管理")
-print('    "创建角色"           → 7 阶段访谈式角色创建')
-print('    "蒸馏角色 庄子"      → 从对话中蒸馏新角色')
-print('    "克隆角色 小昭"      → 克隆现有角色再微调')
-print("")
-print("  💬 对话示例")
-print('    "Feynman, 解释量子纠缠"  → 费曼用物理直觉回答')
-print('    "叫Feynman和Buddha讨论XX"  → 多角色圆桌讨论')
-print('    "各位大佬"            → 触发群聊模式')
-print("")
-print("  🔄 维护")
-print('    "运行熏习"           → 运行知识衰减和强度更新')
-print('    "健康检查"            → 验证系统完整性')
-print('    "深读 {卡片名}"       → 回查卡片关联的原始文档')
-print("")
-print("  Tip: 说 \"alaya init\" 可随时重新运行此配置向导。")
-print("  Tip: 说 \"识海帮助\" 可查看详细操作指南。")
+
+# Language-aware guide
+if config.get("language") == "en":
+    print("""
+  Use natural language to talk to your Agent — no commands to memorize.
+  Here are a few things you can try right away:
+
+  1. Chat with a persona
+     "Feynman, explain quantum entanglement in simple terms"
+     "Buddha, how should I understand 'all is mind'?"
+     "Ask Feynman and Socrates to discuss the limits of AI"
+
+  2. Import knowledge
+     "Import this paper into the knowledge base"  (send a PDF or link)
+     "Batch import documents from raw/"
+
+  3. Build the knowledge graph
+     "Build index"
+     -> This scans your wiki and builds the retrieval index.
+     -> Personas can only answer from the knowledge base after indexing.
+
+  -- Advanced (explore later) --
+     "Run xunxi"        -> Knowledge decay maintenance
+     "Health check"     -> Verify system integrity
+     "Create persona"   -> Create a custom persona
+     "Alaya help"       -> Full operation guide
+
+  Re-configure anytime: say "alaya init"
+""")
+else:
+    print("""
+  用自然语言直接跟你的 Agent 说话就行，不需要记命令。
+  以下是你可以立刻尝试的几件事：
+
+  1. 和角色聊天
+     "费曼，用大白话解释一下量子纠缠"
+     "佛祖，怎么理解'万法唯识'？"
+     "叫费曼和苏格拉底讨论 AI 的局限性"
+
+  2. 导入知识
+     "帮我把这篇论文导入知识库"  (发一个 PDF 或链接)
+     "批量导入 raw/ 文件夹里的文档"
+
+  3. 构建知识图谱
+     "帮我构建索引"
+     -> 这一步会扫描你的 wiki 知识库，建立检索索引
+     -> 索引建好后，角色才能基于知识库回答问题
+
+  -- 进阶操作（之后慢慢探索）--
+     "运行熏习"    -> 知识衰减维护
+     "健康检查"    -> 检查系统完整性
+     "创建角色"    -> 自定义一个新角色
+     "识海帮助"    -> 查看完整操作指南
+
+  💡 推荐配合 Obsidian 使用，可以可视化知识图谱。
+     下载 obsidian.md -> Open folder as vault -> 选择此目录
+
+  重新配置：说 "alaya init"
+""")
