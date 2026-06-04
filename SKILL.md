@@ -75,7 +75,11 @@ For **Cursor / Codex**: include SKILL_FULL.md (merged file) in `.cursorrules` or
 | "clone {name}" / "克隆角色" | Clone persona JSON + profile.md then customize |
 | "delete persona {name}" / "删除角色" | Delete persona JSON + profile.md from manas/ |
 | "import paper {url}" / "导入论文" | Two-mode import (see Paper Import Workflow — brief version below, detailed in SKILL_REF.md §4) |
-| "batch import {path}" / "批量导入" / "import {path}" | Run `python scripts/batch_import.py {path}` |
+| **Batch Import — Three Modes** | **Batch Import Protocol** (see below) |
+| "批量导入笔记" / "批量导入markdown" / "批量导入txt" / "批量导入文件" | 通用导入 → `scripts/batch_import.py`（支持.md/.txt/.pdf） |
+| "快速导入PDF" | Mode 1 (Fast) → `scripts/academic_import.py` |
+| "并行导入PDF" | Mode 2 (Parallel) → `scripts/academic_import.py --parallel` |
+| "深度导入论文" / "LLM导入" | Mode 3 (LLM) → Agent generates with LLM |
 | "deep read {card}" / "深读 {card}" / "查看 {card} 原文" | Deep Read Protocol (see section below, detailed in SKILL_REF.md §7) |
 | "BI report" / "BI观察" / "天道观察" | Run `python scripts/bi_observer.py` for pattern observation |
 | "enable Alaya" / "Disable Alaya" | Toggle Alaya retrieval mode |
@@ -98,6 +102,523 @@ SKILL.md is self-sufficient and independently functional. The following suppleme
 **Self-sufficiency guarantee**: Every section in SKILL_GUIDE.md and SKILL_REF.md has a concise version or pointer in this file. If a supplementary file cannot be read, the system continues to function correctly — with slightly less detail for the affected workflow.
 
 For single-file agent platforms (Cursor, Codex, etc.), use [SKILL_FULL.md](SKILL_FULL.md) — the auto-merged version containing all content.
+
+---
+
+## Batch Import Protocol [THREE MODES]
+
+**Scope**: Supports single file, multiple files, and mixed format imports.
+- **Single file**: Import one file (e.g., `import paper.pdf`)
+- **Multiple files**: Import from directory (e.g., `import papers/`)
+- **Mixed formats**: Handle .md, .txt, .pdf in same directory
+
+When user requests batch import ("批量导入", "import papers", "导入笔记", etc.), follow this protocol:
+
+### Step 1: Detect File Types and Source Type
+
+First, determine if user provided a single file or directory:
+- **Single file**: Import just that one file
+- **Directory**: Recursively scan for all files
+
+Then analyze file type distribution:
+- Count PDF files (.pdf)
+- Count Markdown files (.md)
+- Count Text files (.txt)
+- Count unsupported formats (.docx, .html, .png, etc.)
+
+### Step 2: Determine Available Modes
+
+**Supported formats** (.md, .txt, .pdf):
+- **batch_import.py** supports all three formats (.md, .txt, .pdf) → Mode 1 available
+- **academic_import.py** supports PDF only → Mode 2 available for PDF files
+- **LLM Mode** supports all formats → Mode 3 always available
+
+Agent recommendation strategy:
+- **Simple files** (.md/.txt) → Mode 1 (Fast Script) - fast and zero cost
+- **PDF < 10 papers** → Mode 1 or Mode 3 (User choice based on quality needs)
+- **PDF 10+ papers** → Mode 2 (Parallel Script) - fastest for large batches
+- **High quality needed** → Mode 3 (LLM) - structured summary and understanding
+
+**Unsupported formats** (.docx, .html, .png, etc.):
+- Only provide Mode 3 (LLM Intelligent Import)
+- Agent note: "⚠️ 此格式需要LLM理解处理 / This format requires LLM processing"
+
+### Step 3: Present Available Options to User
+
+**Important**: Agent should NOT make decisions for the user. Instead:
+1. Clearly state the current file format situation
+2. List all available modes based on file type
+3. Explain pros/cons of each mode
+4. Provide suggestions (not decisions)
+5. Let the user decide
+
+```markdown
+## 批量导入 - 模式选择 / Batch Import - Mode Selection
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 当前文件检测 / Current File Detection
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+导入类型 / Import type: {import_type}
+{import_type_description}
+
+检测到以下文件格式 / Detected file formats:
+{file_detection_summary}
+  • PDF文件: {pdf_count} 个
+  • Markdown文件: {md_count} 个  
+  • Text文件: {txt_count} 个
+  • 其他格式: {other_count} 个 ({other_formats})
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 可用导入模式 / Available Import Modes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+基于当前文件格式，以下模式可选 / Based on current formats, these modes are available:
+
+【选项 1】脚本快速导入 (Fast Script Mode)
+───────────────────────────────────────────────────
+✓ 可处理当前所有文件 / Can process all current files
+✓ 速度：0.5-2秒/文件 / Speed: 0.5-2s per file
+✓ 成本：零成本，无需LLM / Cost: Zero, no LLM needed
+✗ 内容质量：原始文本，无结构化 / Quality: Raw text, no structuring
+
+适用场景 / Best for:
+• 快速建立知识库底座 / Quick knowledge base setup
+• 大量简单文件需要快速入库 / Large simple files need fast import
+• 对内容结构化要求不高 / Low requirement for structuring
+
+───────────────────────────────────────────────────
+
+【选项 2】脚本并行导入 (Parallel Script Mode)
+───────────────────────────────────────────────────
+{mode2_availability}
+✓ 速度：最快（2-4倍加速，利用多核）/ Speed: Fastest (2-4x, multi-core)
+✓ 成本：零成本，无需LLM / Cost: Zero, no LLM needed  
+✗ 内容质量：原始PDF文本，无结构化 / Quality: Raw PDF text, no structuring
+✗ 格式限制：仅支持PDF / Format limit: PDF files only
+
+适用场景 / Best for:
+• 大量PDF文件批量处理 / Large PDF batch processing
+• 需要最快速度归档论文 / Need fastest archiving of papers
+• 对内容结构化要求不高 / Low requirement for structuring
+
+⚠️ 注意 / Note: {mode2_warning}
+
+───────────────────────────────────────────────────
+
+【选项 3】LLM智能导入 (LLM Intelligent Mode)
+───────────────────────────────────────────────────
+✓ 可处理所有格式（包括不支持的格式）/ Can process ALL formats
+✓ 内容质量：高质量结构化（智能摘要+关键点）/ Quality: High structured content
+✓ 灵活性：Agent智能理解文件内容 / Flexibility: AI understands content
+✗ 速度：较慢（10-30秒/文件）/ Speed: Slower (10-30s per file)
+✗ 成本：消耗平台配额 / Cost: Consumes platform quota
+
+适用场景 / Best for:
+• 重要文献需要深度理解 / Important papers need deep understanding
+• 不支持的格式（Word、网页等）/ Unsupported formats (Word, web, etc.)
+• 需要高质量知识卡片 / Need high-quality knowledge cards
+• 希望获得结构化摘要 / Want structured summaries
+
+───────────────────────────────────────────────────
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 建议仅供参考 / Suggestions for Reference Only
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• 如果追求速度和效率 / If prioritizing speed and efficiency:
+  → 建议选项 1 或 2 / Suggest option 1 or 2
+
+• 如果追求内容质量 / If prioritizing content quality:
+  → 建议选项 3 / Suggest option 3
+
+• 如果有 unsupported 格式 / If has unsupported formats:
+  → 必须选择选项 3 / Must choose option 3
+
+• 如果不确定 / If unsure:
+  → 可以先用选项 1 快速建立索引，再用选项 3 处理重要文件
+  / Can use option 1 for quick indexing, then option 3 for important files
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👉 请选择模式 / Please choose mode: 输入 1/2/3 (Enter 1/2/3)
+```
+
+**Template Variables**:
+- `{import_type}` - Import type: "单个文件 / Single file" or "批量导入 / Batch import"
+- `{import_type_description}` - Description of what will be imported
+- `{file_detection_summary}` - Summary of detected files
+- `{pdf_count}`, `{md_count}`, `{txt_count}`, `{other_count}` - File counts
+- `{other_formats}` - List of unsupported formats (e.g., ".docx, .html")
+- `{mode2_availability}` - "✓ 可用 / Available" (if PDF present) OR "✗ 不可用 / Unavailable" (no PDF)
+- `{mode2_warning}` - Warning if mode2 unavailable or only for PDF files
+
+**Example outputs**:
+
+**Example 1: Single PDF file**
+```
+导入类型: 单个文件
+将导入 1 个文件: paper.pdf
+
+检测到以下文件格式:
+  • PDF文件: 1 个
+  • Markdown文件: 0 个
+  • Text文件: 0 个
+  • 其他格式: 0 个
+
+【选项 1】脚本快速导入
+✓ 可处理 1 个 PDF 文件
+
+【选项 2】脚本并行导入
+✓ 可用 - 可处理 1 个 PDF 文件
+⚠️ 注意: 单个文件使用并行模式收益较小，建议选择选项1
+
+【选项 3】LLM智能导入
+✓ 可处理 1 个 PDF 文件
+```
+
+**Example 2: Mixed formats (.md, .txt, .pdf)**
+```
+检测到以下文件格式:
+  • PDF文件: 15 个
+  • Markdown文件: 8 个
+  • Text文件: 3 个
+  • 其他格式: 0 个
+
+【选项 2】脚本并行导入
+✓ 可用 - 可处理 15 个 PDF 文件
+⚠️ 注意: 仅处理PDF文件，其他文件将被跳过。如需处理所有文件，请选择选项1或3
+```
+
+**Example 3: Unsupported formats only (.docx)**
+```
+检测到以下文件格式:
+  • PDF文件: 0 个
+  • Markdown文件: 0 个
+  • Text文件: 0 个
+  • 其他格式: 5 个 (.docx)
+
+【选项 1】脚本快速导入
+✗ 不可用 - 不支持当前文件格式 (.docx)
+
+【选项 2】脚本并行导入  
+✗ 不可用 - 不支持当前文件格式 (.docx)
+
+【选项 3】LLM智能导入
+✓ 可用 - 可处理所有格式，包括 .docx
+```
+
+**Example 4: Mixed formats with unsupported (.md, .pdf, .docx)**
+```
+导入类型: 批量导入
+将导入目录中的 20 个文件
+
+检测到以下文件格式:
+  • PDF文件: 10 个
+  • Markdown文件: 5 个
+  • Text文件: 3 个
+  • 其他格式: 2 个 (.docx)
+
+【选项 1】脚本快速导入
+✓ 可处理 18 个文件 (.md + .txt + .pdf)
+⚠️ 注意: 2个.docx文件将被跳过
+
+【选项 2】脚本并行导入
+✓ 可用 - 可处理 10 个 PDF 文件
+⚠️ 注意: 仅处理PDF文件（10个），其他10个文件将被跳过
+
+【选项 3】LLM智能导入
+✓ 可处理所有 20 个文件，包括 .docx
+```
+
+**Example 5: Large PDF batch**
+```
+检测到以下文件格式:
+  • PDF文件: 50 个
+  • Markdown文件: 0 个
+  • Text文件: 0 个
+  • 其他格式: 0 个
+
+【选项 2】脚本并行导入
+✓ 可用 - 最适合大量PDF文件
+⚠️ 注意: 将使用多进程并行处理50个PDF文件，预计耗时约25-50秒
+```
+
+### Step 4: Execute Based on User Choice
+
+| User Choice | Agent Action |
+|-------------|--------------|
+| Mode 1 (Fast Script) | Run: `python scripts/batch_import.py {source} --category {cat}` |
+| Mode 2 (Parallel Script) | Run: `python scripts/academic_import.py {source} --category {cat} --parallel` |
+| Mode 3 (LLM) | See LLM Mode Protocol below |
+
+### LLM Mode Protocol (Mode 3)
+
+When user chooses Mode 3, process each file as follows:
+
+1. **Extract file content**: 
+   - For PDF: Use `lib/format_converter.py` to extract text (first 8000 chars)
+   - For .md/.txt: Read file content directly
+   - For unsupported formats: Agent analyzes file directly (if platform supports)
+2. **Copy file to raw/**: Copy source file to `raw/{slug}.{ext}` for deep read
+3. **Apply LLM prompt template**: Use the appropriate template below (Paper vs General)
+4. **Generate card**: Use Agent's current LLM capability to generate structured content
+5. **Validate format**: Use validation checklist below
+6. **Write file**: Save to `wiki/{category}/{slug}.md`
+7. **Update checkpoint**: Track progress for resume capability
+
+#### Format-Specific Processing
+
+| Format | Content Extraction | Template |
+|--------|-------------------|----------|
+| .pdf | `extract_text()` (first 8000 chars) | Paper Template |
+| .md | Read directly (first 8000 chars) | General Template |
+| .txt | Read directly (first 8000 chars) | General Template |
+| .docx | Agent analyzes (if supported) | General Template |
+| .html | Agent analyzes (if supported) | General Template |
+| Other | Agent analyzes (if supported) | General Template |
+
+#### LLM Card Generation Prompt Template
+
+```markdown
+请基于以下论文全文，生成高质量的Alaya知识卡片。
+
+论文标题：{title}
+分类：{category}
+
+论文全文（前8000字符）：
+{text}
+
+请按以下Markdown格式生成完整的知识卡片：
+
+---
+title: "{title}"
+type: paper
+seed_type: REFINED
+created_by: academic_llm
+strength: 0.7
+last_activated: {today}
+activation_count: 0
+half_life: 30
+description: "一句话描述论文核心价值"
+source_file: "raw/{slug}.{ext}"
+source_type: pdf
+tags: ["GNN", "node-classification", "concept-tags"]
+created: {today}
+updated: {today}
+---
+
+# {title}
+
+## Abstract
+[2-3句话的中文摘要，说明研究问题、方法、关键发现 / 2-3 sentence Chinese abstract: research problem, method, key findings]
+
+## Contributions
+### 概念说明 / Overview
+[2-3句话整体概括核心贡献 / 2-3 sentences overview of core contributions]
+
+### 分点详述 / Details
+- **贡献一（理论/方法）**：[具体描述，2-3句话 / Contribution 1 (theory/method): specific description, 2-3 sentences]
+- **贡献二（算法/架构）**：[具体描述，2-3句话 / Contribution 2 (algorithm/architecture): specific description, 2-3 sentences]
+- **贡献三（实验/应用）**：[具体描述，2-3句话 / Contribution 3 (experiment/application): specific description, 2-3 sentences]
+
+## Method
+[5-8段详细方法说明 / 5-8 paragraphs detailed method description]
+- 问题定义与形式化 / Problem definition and formulation
+- 整体架构总览 / Overall architecture overview
+- 模块详解（核心组件）/ Module details (core components)
+- 训练/优化策略 / Training/optimization strategy
+
+## Key Results
+- 主要基准测试/数据集及指标 / Main benchmarks/datasets and metrics
+- 对比基线及排名 / Comparison with baselines and ranking
+- 消融实验亮点 / Ablation study highlights
+
+## Limitations
+[1-2条已知局限性 / 1-2 known limitations]
+
+## Relevance
+[与你研究领域的具体关联 / Specific relevance to your research field]
+
+## Concept Tags
+- [[图神经网络]] / [[Graph Neural Networks]]
+- [[节点分类]] / [[Node Classification]]
+- [[相关概念]] / [[Related Concepts]]
+
+## 原始文件 / Original File
+[📄 打开原始文件 / Open original file](file:///{file_path})
+```
+
+#### LLM Card Generation Prompt Template (General Format)
+
+```markdown
+请基于以下文件内容，生成高质量的Alaya知识卡片。
+
+文件标题：{title}
+分类：{category}
+文件格式：{format}
+
+文件内容（前8000字符）：
+{text}
+
+请按以下Markdown格式生成完整的知识卡片：
+
+---
+title: "{title}"
+seed_type: REFINED
+created_by: llm_import
+strength: 0.6
+last_activated: {today}
+activation_count: 0
+half_life: 30
+description: "一句话描述文件核心内容"
+source_file: "raw/{slug}.{ext}"
+source_type: {source_type}
+tags: ["tag1", "tag2", "tag3"]
+created: {today}
+updated: {today}
+---
+
+# {title}
+
+## 核心内容 / Core Content
+[3-5段概括文件核心内容 / 3-5 paragraphs summarizing core content]
+- 主要主题 / Main topics
+- 关键观点 / Key points
+- 重要细节 / Important details
+
+## 关键概念 / Key Concepts
+- **概念一**：[说明 / Concept 1: description]
+- **概念二**：[说明 / Concept 2: description]
+- **概念三**：[说明 / Concept 3: description]
+
+## 价值与应用 / Value and Applications
+[文件内容的价值和应用场景 / Value and application scenarios]
+
+## 相关链接 / Related Links
+- [[相关概念1]] / [[Related Concept 1]]
+- [[相关概念2]] / [[Related Concept 2]]
+
+## 原始文件 / Original File
+[📄 打开原始文件 / Open original file](file:///{file_path})
+```
+
+#### Generation Requirements
+
+1. **Alaya metadata complete**: Must include all Alaya core fields
+2. **Chinese language**: Write in Chinese except technical terms (keep GNN, Transformer, etc.)
+3. **Structured content**: Follow template structure strictly
+4. **Accurate content**: Based on file content, do not fabricate
+5. **Reasonable tags**: Extract core concept tags (2-5 tags)
+6. **Format-specific**: Use Paper Template for .pdf, General Template for others
+
+#### Validation Checklist
+
+After generating each card, Agent must verify:
+
+✅ **YAML Format Check**
+- [ ] All Alaya core fields present
+- [ ] `seed_type: REFINED`
+- [ ] `strength: 0.7` (paper) or `0.6` (general)
+- [ ] `created_by: academic_llm` (paper) or `llm_import` (general)
+- [ ] `description` field is not empty
+- [ ] `source_file: "raw/{slug}.{ext}"` exists
+- [ ] `source_type` matches actual file type
+
+✅ **Content Structure Check**
+- [ ] Abstract/Core Content section exists and is substantive
+- [ ] Contributions/Key Concepts section exists with details
+- [ ] Method/Value section exists and is detailed
+- [ ] No placeholder text (not "[...]" or "待填写")
+
+✅ **File Path Check**
+- [ ] File copied to `raw/` directory
+- [ ] `source_file` path is correct
+- [ ] Card written to `wiki/{category}/{slug}.md`
+
+✅ **Quality Check**
+- [ ] Content is based on actual file content
+- [ ] Written in Chinese, technical terms in English
+- [ ] Structure hierarchy is clear
+- [ ] No garbled characters or encoding issues
+
+If validation fails, Agent should:
+1. Indicate specific issue
+2. Ask user whether to regenerate
+
+### Step 4: Quality Review (Post-Import)
+
+After import completes, **ask user if they want quality review**:
+
+```markdown
+## 导入完成 / Import Complete
+
+✅ 导入已完成！是否进行质量审查？
+
+质量审查会检查:
+  • Alaya元数据完整性
+  • 内容质量（占位符、空章节等）
+  • 源文件链接有效性
+  • 字符编码问题
+
+[1] 跳过审查，直接构建索引
+[2] 进行质量审查
+
+请选择 / Please choose: 输入 1/2
+```
+
+If user chooses **Option 1 (Skip)**:
+- Proceed directly to Step 5 (Build Index)
+
+If user chooses **Option 2 (Quality Review)**:
+
+1. **Run quality review script**:
+   ```bash
+   python scripts/import_quality_review.py --category {category} --verbose
+   ```
+
+2. **Review results**: Script generates report showing:
+   - Total cards reviewed
+   - Cards with issues
+   - Specific issue types
+
+3. **If issues found**: Ask user if they want Agent to review and fix:
+   ```markdown
+   ⚠️ 发现 {issue_count} 个卡片存在问题
+
+   是否让Agent智能体进行深度审查和修复？
+   • Agent可以智能修复缺失的元数据字段
+   • 生成缺失的description
+   • 识别和修复内容质量问题
+
+   [1] 跳过，直接构建索引
+   [2] Agent深度审查并修复
+
+   请选择 / Please choose: 输入 1/2
+   ```
+
+4. **If user chooses Agent review**:
+   - Agent reads each problematic card
+   - Identifies and fixes issues using LLM
+   - Updates card files
+   - Re-runs quality review to verify fixes
+
+5. **After quality review**: Proceed to Step 5 (Build Index)
+
+**Quality review script**: `import_quality_review.py`
+**Review result location**: `alaya/.import_reviews/{category}_{date}.json`
+
+### Step 5: Build Index
+
+After import completes, always run:
+
+```bash
+python scripts/build_index.py --category {category}
+```
+
+This updates:
+- `wiki/index.md` - Main index
+- `wiki/{category}/{category}_category.md` - Category page with descriptions
 
 ---
 
@@ -781,7 +1302,10 @@ For the detailed interview questions per round and the audit checklist, read SKI
 | `scripts/build_index.py` | "build index" / after imports |
 | `scripts/perfume.py` | "run xunxi" / session boundary / session start |
 | `scripts/import_paper.py` | "import paper" |
-| `scripts/batch_import.py` | "batch import" |
+| `scripts/batch_import.py` | "batch import" (general files: .md, .txt, .pdf) |
+| `scripts/academic_import.py` | "学术批量导入" / "PDF批量导入" (academic papers) |
+| `scripts/import_quality_review.py` | Post-import quality review (after imports) |
+| `scripts/post_process.py` | Internal: Adapt workbuddy cards to Alaya format |
 | `scripts/health_check.py` | "health check" |
 | `scripts/fix_links.py` | "fix links" |
 | `scripts/bi_observer.py` | "BI report" |

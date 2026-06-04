@@ -6,34 +6,48 @@
 import os, sys
 
 AGENT_TEMPLATE = """\
-Unsupported format: {filename}
-Agent: Please read this file and output in the following format:
+Unsupported format detected: {filename}
+
+Agent: Please read this file and generate a high-quality Alaya knowledge card using the LLM General Template:
 
 ---
 title: "(document title)"
-type: paper
-created: {date}
-source: "{source}"
-tags: [(3-5 topic tags)]
 seed_type: REFINED
-created_by: system
-strength: 0.5
+created_by: llm_import
+strength: 0.6
 last_activated: {date}
 activation_count: 0
 half_life: 30
+description: "一句话描述文件核心内容"
+source_file: "raw/{slug}.{ext}"
+source_type: {source_type}
+tags: ["tag1", "tag2", "tag3"]
+created: {date}
+updated: {date}
 ---
 
 # (Title)
 
-## Summary
-(2-3 sentence summary)
+## 核心内容 / Core Content
+[3-5段概括文件核心内容 / 3-5 paragraphs summarizing core content]
+- 主要主题 / Main topics
+- 关键观点 / Key points
+- 重要细节 / Important details
 
-## Key Points
-- (point 1)
-- (point 2)
+## 关键概念 / Key Concepts
+- **概念一**：[说明 / Concept 1: description]
+- **概念二**：[说明 / Concept 2: description]
+- **概念三**：[说明 / Concept 3: description]
 
-## Content
-(Core content, preserve original structure)
+## 价值与应用 / Value and Applications
+[文件内容的价值和应用场景 / Value and application scenarios]
+
+## 相关链接 / Related Links
+- [[相关概念1]] / [[Related Concept 1]]
+- [[相关概念2]] / [[Related Concept 2]]
+
+## 原始文件 / Original File
+[📄 打开原始文件 / Open original file](file:///{file_path})
 
 Save to: wiki/{{category}}/{{slug}}.md
 Then run: python scripts/build_index.py --category {{category}}
@@ -87,10 +101,19 @@ def extract_metadata(filepath):
 def get_agent_template(filepath, date_str=''):
     """Return Agent guidance template for unsupported formats."""
     from datetime import datetime
+    fname = os.path.basename(filepath)
+    slug, ext = os.path.splitext(fname)
+    slug = slug.lower().replace(' ', '-')
+    ext = ext.lstrip('.')
+    fmt = detect_format(filepath)
+    source_type = fmt if fmt else ext
     return AGENT_TEMPLATE.format(
-        filename=os.path.basename(filepath),
+        filename=fname,
         date=date_str or datetime.now().strftime('%Y-%m-%d'),
-        source=filepath,
+        slug=slug,
+        ext=ext,
+        source_type=source_type,
+        file_path=os.path.abspath(filepath).replace('\\', '/'),
     )
 
 

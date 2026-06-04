@@ -207,8 +207,10 @@ def main():
                     yaml_str = yaml_str.rstrip() + desc_line
             new_yaml = inject_metadata(yaml_str, {'last_activated': today, 'created_by': 'system'})
             # Append source fields if not already present
-            if source_fm and 'source_file:' not in yaml_str:
-                new_yaml = new_yaml.rstrip() + '\n' + source_fm.rstrip()
+            if source_file_val and 'source_file:' not in yaml_str:
+                new_yaml = new_yaml.rstrip() + f'\nsource_file: "{source_file_val}"'
+            if source_type_val and 'source_type:' not in yaml_str:
+                new_yaml = new_yaml.rstrip() + f'\nsource_type: {source_type_val}'
             card_content = rebuild_content(new_yaml, dash, content)
         else:
             # No YAML — create card with full frontmatter
