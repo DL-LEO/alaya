@@ -44,25 +44,26 @@ def parse_args():
     incremental = False
     classify_card = None
 
+    def _need_val(flag, val):
+        """Guard: a flag value must not look like another flag."""
+        if val is not None and val.startswith('--'):
+            print(f"[build_index] ERROR: {flag} requires a value, got '{val}'", file=sys.stderr)
+            sys.exit(1)
+        return val
+
     i = 0
     while i < len(args):
         if args[i] == '--category' and i + 1 < len(args):
-            category = args[i + 1]
-            i += 2
+            category = _need_val('--category', args[i + 1]); i += 2
         elif args[i] == '--incremental':
-            incremental = True
-            i += 1
+            incremental = True; i += 1
         elif args[i] == '--classify-card' and i + 1 < len(args):
-            classify_card = args[i + 1]
-            i += 2
+            classify_card = _need_val('--classify-card', args[i + 1]); i += 2
         elif args[i] == '--alaya' and i + 1 < len(args):
-            alaya_dir = args[i + 1]
-            i += 2
+            alaya_dir = _need_val('--alaya', args[i + 1]); i += 2
         elif args[i] == '--wiki' and i + 1 < len(args):
-            wiki_dir = args[i + 1]
-            i += 2
+            wiki_dir = _need_val('--wiki', args[i + 1]); i += 2
         elif args[i] == '--full':
-            # Full rebuild (default behavior, explicit flag for CLI compatibility)
             i += 1
         elif not args[i].startswith('--'):
             if wiki_dir == 'wiki':
@@ -71,6 +72,7 @@ def parse_args():
                 alaya_dir = args[i]
             i += 1
         else:
+            print(f"[build_index] WARNING: unknown flag '{args[i]}' (ignored)", file=sys.stderr)
             i += 1
 
     return wiki_dir, alaya_dir, category, incremental, classify_card
@@ -248,12 +250,13 @@ def generate_category_header(cards):
              if c.get('description', '').strip()]
 
     if descs:
-        if total == 1:
+        n_descs = len(descs)
+        if n_descs == 1:
             header += f" 核心主题：{descs[0]}"
-        elif total == 2:
+        elif n_descs == 2:
             header += f" 涵盖：{descs[0]}；{descs[1]}。"
         else:
-            # 3+ cards: sample top 2 descriptions as entry points
+            # 3+ descriptions: sample top 2 as entry points
             header += f" 核心议题如：{descs[0]}；{descs[1]}。"
             if total >= 6:
                 header += f" 其余 {total - 2} 张卡片延伸至相关子领域。"

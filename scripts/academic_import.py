@@ -32,17 +32,20 @@ def parse_args():
     parallel = False
     workers = None
 
+    def _need_val(flag, val):
+        if val is not None and val.startswith('--'):
+            print(f"[academic_import] ERROR: {flag} requires a value, got '{val}'", file=sys.stderr)
+            sys.exit(1)
+        return val
+
     i = 0
     while i < len(args):
         if args[i] == '--category' and i + 1 < len(args):
-            category = args[i + 1]
-            i += 2
+            category = _need_val('--category', args[i + 1]); i += 2
         elif args[i] == '--wiki' and i + 1 < len(args):
-            wiki_dir = args[i + 1]
-            i += 2
+            wiki_dir = _need_val('--wiki', args[i + 1]); i += 2
         elif args[i] == '--alaya' and i + 1 < len(args):
-            alaya_dir = args[i + 1]
-            i += 2
+            alaya_dir = _need_val('--alaya', args[i + 1]); i += 2
         elif args[i] == '--max-chars' and i + 1 < len(args):
             try:
                 max_chars = int(args[i + 1])
@@ -74,6 +77,7 @@ def parse_args():
                 source = args[i]
             i += 1
         else:
+            print(f"[academic_import] WARNING: unknown flag '{args[i]}' (ignored)", file=sys.stderr)
             i += 1
 
     return source, category, wiki_dir, alaya_dir, max_chars, dry_run, skip_existing, parallel, workers

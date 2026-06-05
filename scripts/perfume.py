@@ -47,6 +47,12 @@ def parse_args():
         "affinity_increment": 0.01
     }
 
+    def _need_val(flag, val):
+        if val is not None and val.startswith('--'):
+            print(f"[perfume] ERROR: {flag} requires a value, got '{val}'", file=sys.stderr)
+            sys.exit(1)
+        return val
+
     i = 0
     while i < len(args):
         if args[i] == "--level":
@@ -67,10 +73,10 @@ def parse_args():
                 result["cards"] = [c.strip() for c in args[i].split(",") if c.strip()]
         elif args[i] == "--persona":
             i += 1
-            result["persona"] = args[i] if i < len(args) else None
+            result["persona"] = _need_val("--persona", args[i]) if i < len(args) else None
         elif args[i] == "--topic":
             i += 1
-            result["topic"] = args[i] if i < len(args) else None
+            result["topic"] = _need_val("--topic", args[i]) if i < len(args) else None
         elif args[i] == "--turns":
             i += 1
             if i < len(args):
@@ -85,27 +91,27 @@ def parse_args():
                 result["tags"] = [t.strip() for t in args[i].split(",") if t.strip()]
         elif args[i] == "--mood":
             i += 1
-            result["mood"] = args[i] if i < len(args) else ""
+            result["mood"] = _need_val("--mood", args[i]) if i < len(args) else ""
         elif args[i] == "--summary":
             i += 1
-            result["summary"] = args[i] if i < len(args) else ""
+            result["summary"] = _need_val("--summary", args[i]) if i < len(args) else ""
         elif args[i] == "--ambient":
             i += 1
-            result["ambient"] = args[i] if i < len(args) else None
+            result["ambient"] = _need_val("--ambient", args[i]) if i < len(args) else None
         elif args[i] == "--history":
             i += 1
-            result["history"] = args[i] if i < len(args) else None
+            result["history"] = _need_val("--history", args[i]) if i < len(args) else None
         elif args[i] == "--alaya":
             i += 1
-            result["alaya_dir"] = args[i] if i < len(args) else result["alaya_dir"]
+            result["alaya_dir"] = _need_val("--alaya", args[i]) if i < len(args) else result["alaya_dir"]
         elif args[i] == "--wiki":
             i += 1
-            result["wiki_dir"] = args[i] if i < len(args) else result["wiki_dir"]
+            result["wiki_dir"] = _need_val("--wiki", args[i]) if i < len(args) else result["wiki_dir"]
         elif args[i] == "--sleep-check":
             result["sleep_check"] = True
         elif args[i] == "--wake":
             i += 1
-            result["wake"] = args[i] if i < len(args) else None
+            result["wake"] = _need_val("--wake", args[i]) if i < len(args) else None
         elif args[i] == "--affinity-increment":
             i += 1
             if i < len(args):
@@ -114,7 +120,10 @@ def parse_args():
                 except ValueError:
                     print(f"Invalid affinity increment: {args[i]}")
                     sys.exit(1)
+        elif args[i].startswith("--"):
+            print(f"[perfume] WARNING: unknown flag '{args[i]}' (ignored)", file=sys.stderr)
         else:
+            # Positional: assign to first unset directory slot
             if result["alaya_dir"] == "alaya":
                 result["alaya_dir"] = args[i]
             elif result["wiki_dir"] == "wiki":

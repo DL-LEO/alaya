@@ -24,17 +24,20 @@ def parse_args():
     alaya_dir = 'alaya'
     dry_run = False
 
+    def _need_val(flag, val):
+        if val is not None and val.startswith('--'):
+            print(f"[post_process] ERROR: {flag} requires a value, got '{val}'", file=sys.stderr)
+            sys.exit(1)
+        return val
+
     i = 0
     while i < len(args):
         if args[i] == '--category' and i + 1 < len(args):
-            category = args[i + 1]
-            i += 2
+            category = _need_val('--category', args[i + 1]); i += 2
         elif args[i] == '--wiki' and i + 1 < len(args):
-            wiki_dir = args[i + 1]
-            i += 2
+            wiki_dir = _need_val('--wiki', args[i + 1]); i += 2
         elif args[i] == '--alaya' and i + 1 < len(args):
-            alaya_dir = args[i + 1]
-            i += 2
+            alaya_dir = _need_val('--alaya', args[i + 1]); i += 2
         elif args[i] == '--dry-run':
             dry_run = True
             i += 1
@@ -43,6 +46,7 @@ def parse_args():
                 card_path = args[i]
             i += 1
         else:
+            print(f"[post_process] WARNING: unknown flag '{args[i]}' (ignored)", file=sys.stderr)
             i += 1
 
     return card_path, category, wiki_dir, alaya_dir, dry_run

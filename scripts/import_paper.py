@@ -29,14 +29,18 @@ def parse_args():
     max_chars = 2000
     template_dir = DEFAULT_TEMPLATE_DIR
 
+    def _need_val(flag, val):
+        if val is not None and val.startswith('--'):
+            print(f"[import_paper] ERROR: {flag} requires a value, got '{val}'", file=sys.stderr)
+            sys.exit(1)
+        return val
+
     i = 0
     while i < len(args):
         if args[i] == '--category' and i + 1 < len(args):
-            category = args[i + 1]
-            i += 2
+            category = _need_val('--category', args[i + 1]); i += 2
         elif args[i] == '--wiki' and i + 1 < len(args):
-            wiki_dir = args[i + 1]
-            i += 2
+            wiki_dir = _need_val('--wiki', args[i + 1]); i += 2
         elif args[i] == '--mode' and i + 1 < len(args):
             mode = args[i + 1].lower()
             if mode not in ('info', 'full'):
@@ -60,13 +64,13 @@ def parse_args():
                 sys.exit(1)
             i += 2
         elif args[i] == '--template-dir' and i + 1 < len(args):
-            template_dir = args[i + 1]
-            i += 2
+            template_dir = _need_val('--template-dir', args[i + 1]); i += 2
         elif not args[i].startswith('--'):
             if source is None:
                 source = args[i]
             i += 1
         else:
+            print(f"[import_paper] WARNING: unknown flag '{args[i]}' (ignored)", file=sys.stderr)
             i += 1
 
     if not source:

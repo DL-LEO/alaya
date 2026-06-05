@@ -22,22 +22,28 @@ def parse_args():
     fix = False
     verbose = False
 
+    def _need_val(flag, val):
+        if val is not None and val.startswith('--'):
+            print(f"[import_quality_review] ERROR: {flag} requires a value, got '{val}'", file=sys.stderr)
+            sys.exit(1)
+        return val
+
     i = 0
     while i < len(args):
         if args[i] == '--category' and i + 1 < len(args):
-            category = args[i + 1]
-            i += 2
+            category = _need_val('--category', args[i + 1]); i += 2
         elif args[i] == '--wiki' and i + 1 < len(args):
-            wiki_dir = args[i + 1]
-            i += 2
+            wiki_dir = _need_val('--wiki', args[i + 1]); i += 2
         elif args[i] == '--alaya' and i + 1 < len(args):
-            alaya_dir = args[i + 1]
-            i += 2
+            alaya_dir = _need_val('--alaya', args[i + 1]); i += 2
         elif args[i] == '--fix':
             fix = True
             i += 1
         elif args[i] == '--verbose':
             verbose = True
+            i += 1
+        elif args[i].startswith('--'):
+            print(f"[import_quality_review] WARNING: unknown flag '{args[i]}' (ignored)", file=sys.stderr)
             i += 1
         else:
             i += 1

@@ -20,22 +20,26 @@ def parse_args():
     wiki_dir = 'wiki'
     alaya_dir = 'alaya'
 
+    def _need_val(flag, val):
+        if val is not None and val.startswith('--'):
+            print(f"[batch_import] ERROR: {flag} requires a value, got '{val}'", file=sys.stderr)
+            sys.exit(1)
+        return val
+
     i = 0
     while i < len(args):
         if args[i] == '--category' and i + 1 < len(args):
-            category = args[i + 1]
-            i += 2
+            category = _need_val('--category', args[i + 1]); i += 2
         elif args[i] == '--wiki' and i + 1 < len(args):
-            wiki_dir = args[i + 1]
-            i += 2
+            wiki_dir = _need_val('--wiki', args[i + 1]); i += 2
         elif args[i] == '--alaya' and i + 1 < len(args):
-            alaya_dir = args[i + 1]
-            i += 2
+            alaya_dir = _need_val('--alaya', args[i + 1]); i += 2
         elif not args[i].startswith('--'):
             if source is None:
                 source = args[i]
             i += 1
         else:
+            print(f"[batch_import] WARNING: unknown flag '{args[i]}' (ignored)", file=sys.stderr)
             i += 1
 
     return source, category, wiki_dir, alaya_dir
