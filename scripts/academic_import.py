@@ -1,7 +1,7 @@
 # Alaya · Academic Batch Import
 # Academic paper batch import with structured card generation.
 # Supports PDF extraction, academic card template, and Alaya integration.
-#
+# 
 # Usage:
 #   python scripts/academic_import.py <source_dir> [--category cat] [--wiki dir] [--alaya dir]
 

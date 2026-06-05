@@ -1,4 +1,4 @@
-# Alaya · Format Converter
+# Alaya · Format Converter 
 # Zero-dependency format conversion for wiki card import.
 # Handles MD/TXT natively, PDF via PyMuPDF (optional).
 # Unsupported formats return None with Agent guidance template.

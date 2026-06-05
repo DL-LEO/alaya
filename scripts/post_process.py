@@ -1,7 +1,7 @@
 # Alaya · Post-Process for Academic Import
 # Adapter layer that converts workbuddy academic cards to Alaya format.
 # Handles PDF copying to raw/, YAML format conversion, and Alaya metadata injection.
-#
+# 
 # Usage:
 #   python scripts/post_process.py <card_path> [--category cat] [--wiki dir] [--alaya dir]
 

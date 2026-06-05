@@ -1,7 +1,7 @@
 # Alaya · Batch Import
 # Import files from a directory into wiki/{category}/ with checkpoint/resume.
 # Supports .md, .txt, and .pdf (via format_converter, PyMuPDF optional).
-#
+# 
 # Usage:
 #   python scripts/batch_import.py <source_dir> [--category cat] [--wiki dir] [--alaya dir]
 
