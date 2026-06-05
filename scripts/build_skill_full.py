@@ -36,6 +36,18 @@ def extract_section_titles(content, source_name):
     return [(level, title.strip(), source_name) for level, title in titles]
 
 
+def extract_batch_triggers(content):
+    """Extract batch import trigger phrases from a markdown content.
+    Returns set of Chinese trigger phrases (in quotes)."""
+    triggers = set()
+    for match in re.finditer(
+        r'"([^"]*(?:批量导入|导入|LLM导入|PDF导入|学术批量)[^"]*)"',
+        content
+    ):
+        triggers.add(match.group(1))
+    return triggers
+
+
 def validate_consistency(core_content, guide_content, ref_content):
     """
     Validate that every section title in GUIDE and REF has a
@@ -57,10 +69,10 @@ def validate_consistency(core_content, guide_content, ref_content):
         '检查清单', '帮助', 'what you can do',
     ]
     known_core_refs_to_ref = [
-        'SKILL_REF', '§1', '§2', '§3', '§4', '§5', '§6', '§7',
+        'SKILL_REF', '§1', '§2', '§3', '§4', '§5', '§6', '§7', '§8',
         'Session Boundary', 'Persona JSON Schema', 'Persona Creation',
         'Paper Import', 'Script Reference', 'Refinement Prompt',
-        'Deep Read Protocol', 'reference',
+        'Deep Read Protocol', 'Batch Import', 'reference',
     ]
 
     for level, title, src in guide_titles:
@@ -102,6 +114,21 @@ def validate_consistency(core_content, guide_content, ref_content):
                 f'obvious pointer in SKILL.md. '
                 f'Consider adding a brief mention or cross-reference.'
             )
+
+    # Batch import trigger consistency check
+    # Triggers in SKILL.md command table must also appear in SKILL_REF.md §8
+    # so the on-demand loading contract is fulfilled.
+    core_triggers = extract_batch_triggers(core_content)
+    ref_triggers = extract_batch_triggers(ref_content)
+
+    only_in_core = core_triggers - ref_triggers
+    if only_in_core:
+        warnings.append(
+            f'[WARN] Batch import triggers in SKILL.md command table '
+            f'but NOT in SKILL_REF.md §8 trigger line: '
+            f'{", ".join(sorted(only_in_core))}. '
+            f'These triggers may fail to load the full protocol on-demand.'
+        )
 
     return warnings
 
