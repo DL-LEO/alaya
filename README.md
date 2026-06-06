@@ -106,9 +106,13 @@ In the age of AI agents, you don't need to run commands yourself. Just say:
 
 > **"Install this skill: https://github.com/DL-LEO/alaya"**
 >
+> **or: "Install this skill: https://gitee.com/DL-LEO-gitee/alaya"**
+>
 > or: **"帮我安装这个技能：https://github.com/DL-LEO/alaya"**
 >
 > or: **"Add Alaya to my agent"**
+
+**💡 Tip**: For users in China, the Gitee mirror may be faster.
 
 Your agent will automatically:
 1. Clone the repository
@@ -119,7 +123,11 @@ Your agent will automatically:
 <summary>Manual installation (if you prefer)</summary>
 
 ```bash
+# GitHub (global)
 git clone https://github.com/DL-LEO/alaya.git
+
+# Gitee (China-friendly)
+git clone https://gitee.com/DL-LEO-gitee/alaya.git
 ```
 
 Then point your agent to `SKILL.md`:
@@ -485,6 +493,10 @@ Layer 3 · wiki/{分类}/*.md
 **1. 安装（跟你的 Agent 说就行）**
 
 > **"帮我安装这个技能：https://github.com/DL-LEO/alaya"**
+>
+> **或："帮我安装这个技能：https://gitee.com/DL-LEO-gitee/alaya"**
+
+**💡 小贴士**：国内用户推荐使用 Gitee 镜像，速度更快。
 
 Agent 会自动克隆仓库、读取 SKILL.md、完成配置。
 

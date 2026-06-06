@@ -21,9 +21,13 @@ The easiest way to install Alaya is to simply tell your agent:
 
 > **"Install this skill: https://github.com/DL-LEO/alaya"**
 >
+> **or: "Install this skill: https://gitee.com/DL-LEO-gitee/alaya"**
+>
 > or: **"帮我安装这个技能：https://github.com/DL-LEO/alaya"**
 >
 > or: **"Add Alaya to my agent"**
+
+**💡 Tip**: For users in China, the Gitee mirror may be faster.
 
 Your agent will handle everything: clone the repo, read `SKILL.md`, and prepare for setup.
 
@@ -31,7 +35,11 @@ Your agent will handle everything: clone the repo, read `SKILL.md`, and prepare 
 <summary>Manual installation (if you prefer)</summary>
 
 ```bash
+# GitHub (global)
 git clone https://github.com/DL-LEO/alaya.git
+
+# Gitee (China-friendly)
+git clone https://gitee.com/DL-LEO-gitee/alaya.git
 ```
 
 Then point your agent to `SKILL.md`:
