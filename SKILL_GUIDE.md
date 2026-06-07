@@ -1,7 +1,7 @@
 ---
 name: Alaya Guide
 description: "Post-init operation guide for Alaya · 识海 — shown to users after first-time setup."
-version: 2.1.0
+version: 3.0.0
 trigger: "Read and display after initial setup completes (First Launch Detection Step 3)"
 ---
 

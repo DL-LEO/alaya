@@ -1,7 +1,7 @@
 ---
 name: Alaya Reference
 description: "Deep reference for Alaya · 识海 — detailed protocols, schemas, workflows, scripts. Read on demand."
-version: 2.1.0
+version: 3.0.0
 trigger: "Read when user triggers Session Boundary (save), create persona, import paper, or needs script/schema reference."
 ---
 
