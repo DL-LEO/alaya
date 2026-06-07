@@ -1,5 +1,5 @@
 {
-  "version": "2.0.0",
+  "version": "3.0.0",
   "name": "Alaya",
   "name_zh": "识海",
   "language": "zh",
@@ -10,6 +10,7 @@
     "version": "2.0.0",
     "top_k": 3,
     "min_pool": 5,
+    "max_cards_per_persona": 5,
     "half_life_default": 30,
     "strength_decay": 0.977,
     "sleep_threshold": 0.1,
@@ -21,14 +22,39 @@
 
   "memory": {
     "version": "1.0.0",
-    "hot_limit": 5,
-    "cold_limit": 45
+    "hot_zone_size": 5,
+    "cold_zone_size": 45,
+    "mood_trajectory_size": 3,
+    "open_threads_limit": 3,
+    "attention_decay_rate": 0.7,
+    "attention_boost_rate": 0.3,
+    "attention_prune_threshold": 0.1
   },
 
   "persona": {
     "version": "1.7.0",
+    "default_persona": "feynman",
     "max_cards_per_persona": 5,
+    "auto_trigger_threshold": 0.7,
+    "max_participants_in_discussion": 6,
     "affinity_decay": 0.992
+  },
+
+  "import": {
+    "version": "1.0.0",
+    "default_category": "uncategorized",
+    "max_chars_for_extraction": 8000,
+    "parallel_workers": 4,
+    "chunk_size": 100
+  },
+
+  "maintenance": {
+    "version": "1.0.0",
+    "auto_xunxi_interval_days": 1,
+    "health_check_interval_days": 7,
+    "bi_report_interval_days": 30,
+    "auto_fix_links": false,
+    "stale_description_threshold_days": 60
   },
 
   "last_xunxi_time": ""
