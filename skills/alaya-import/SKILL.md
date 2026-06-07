@@ -282,6 +282,20 @@ source_type: "pdf"
 | .html  | Agent 分析 (如果支持)            | General 模板   |
 | 其他   | Agent 分析 (如果支持)            | General 模板   |
 
+#### LLM 卡片生成前准备：获取 Wiki 清单
+
+在调用 LLM 生成卡片前，**首先扫描当前 wiki 中已有的卡片名称**：
+
+```
+调用 yaml_utils 的 get_all_cards() 或直接遍历 wiki/{category}/*.md
+    ↓
+整理为"已有卡片名称"列表（每类别一张卡片名）
+    ↓
+将该列表作为上下文注入 LLM 提示中的 {wiki_card_names} 占位符
+```
+
+这确保 LLM 生成的 `## Concept Tags` 和 `## 相关链接` 中的 `[[wiki-link]]` 指向确实存在的卡片。
+
 #### LLM 卡片生成提示模板 (论文)
 
 ```markdown
@@ -289,6 +303,9 @@ source_type: "pdf"
 
 论文标题：{title}
 分类：{category}
+
+当前Wiki已有卡片清单（仅作链接参考，请勿生成不存在的卡片）：
+{wiki_card_names}
 
 论文全文（前8000字符）：
 {text}
@@ -360,6 +377,9 @@ updated: {today}
 
 文件标题：{title}
 分类：{category}
+
+当前Wiki已有卡片清单（仅作链接参考，请勿生成不存在的卡片）：
+{wiki_card_names}
 文件格式：{format}
 
 文件内容（前8000字符）：

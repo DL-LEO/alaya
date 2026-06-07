@@ -253,6 +253,19 @@ def process_single_pdf(pdf_data):
             pass
 
         if success:
+            # Post-import: discover and inject cross-card wiki-links
+            from lib.yaml_utils import discover_related_cards
+            try:
+                with open(target_path, 'r', encoding='utf-8') as f:
+                    card_text = f.read()
+                related = discover_related_cards(wiki_dir, card_text, source_category=category)
+                if related:
+                    with open(target_path, 'a', encoding='utf-8') as f:
+                        f.write('\n## 跨分类链接\n')
+                        for rcat, rname, _ctx in related:
+                            f.write(f'- [[../{rcat}/{rname}]] — 相关内容\n')
+            except Exception:
+                pass  # Link injection is best-effort
             return {'slug': slug, 'status': 'success', 'target': target_path}
         else:
             return {'slug': slug, 'status': 'error', 'reason': message}

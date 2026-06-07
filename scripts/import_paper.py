@@ -367,6 +367,15 @@ def mode_full(source, category, wiki_dir, content_type, max_chars, template_dir)
     with open(dest, 'w', encoding='utf-8') as f:
         f.write(card_content)
 
+    # Post-import: discover and inject cross-card wiki-links
+    from lib.yaml_utils import discover_related_cards
+    related = discover_related_cards(wiki_dir, body, source_category=cat_slug)
+    if related:
+        with open(dest, 'a', encoding='utf-8') as f:
+            f.write('\n## 跨分类链接\n')
+            for cat, name, _ctx in related:
+                f.write(f'- [[../{cat}/{name}]] — 相关内容\n')
+
     print(f'Card created: {dest}')
     print(f'Source: {source_url}')
     print(f'Content: {len(text)} characters')

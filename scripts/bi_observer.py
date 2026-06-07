@@ -337,6 +337,25 @@ def _get_newest_card_mtime(wiki_dir):
     return newest if newest > 0 else None
 
 
+def _extract_cards_section(content):
+    """Extract only the ## Cards section from a category file.
+
+    Avoids treating [[wiki-links]] in ## Related Categories or other sections
+    as card references during orphan detection.
+    """
+    import re as _re
+    cards_start = content.find('## Cards')
+    if cards_start < 0:
+        return ''
+    section = content[cards_start:]
+    # Stop at next ## heading or END-AUTO marker (whichever comes first)
+    next_boundary = _re.search(r'\n## |<!-- END-AUTO -->', section[8:])
+    if next_boundary:
+        section = section[:8 + next_boundary.start()]
+    return section
+
+
+
 def _find_orphan_cards(wiki_dir):
     """Find cards on disk not listed in any {cat}_category.md."""
     if not os.path.isdir(wiki_dir):
@@ -351,8 +370,12 @@ def _find_orphan_cards(wiki_dir):
         if os.path.exists(cat_md_path):
             try:
                 with open(cat_md_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        linked.update(re.findall(r'\[\[([^\]]+?)\]\]', line))
+                    content = f.read()
+                # Only scan ## Cards section to avoid treating cross-category
+                # links in ## Related Categories as card references
+                cards_section = _extract_cards_section(content)
+                if cards_section:
+                    linked.update(re.findall(r'\[\[([^\]]+?)\]\]', cards_section))
             except (IOError, UnicodeDecodeError):
                 pass
         for fname in os.listdir(cat_path):

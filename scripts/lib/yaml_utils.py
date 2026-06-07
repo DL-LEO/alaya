@@ -210,27 +210,39 @@ def set_description(yaml_str, description):
     return set_field(yaml_str, 'description', description)
 
 
-def extract_description_from_body(body_text, max_length=120):
+def _truncate_to_sentence(text, max_length):
+    """Truncate to max_length at the nearest sentence boundary."""
+    if len(text) <= max_length:
+        return text
+    # Try to find a sentence-ending character within range
+    for marker in ('。', '！', '？', '.', '!', '?'):
+        idx = text.rfind(marker, 0, max_length)
+        if idx > max_length * 0.6:  # must be reasonably close to max
+            return text[:idx + 1]
+    return text[:max_length]
+
+
+def extract_description_from_body(body_text, max_length=200):
     """Extract a one-line description from card body text.
 
     Tries: 1) first blockquote line, 2) first non-empty non-heading paragraph.
-    Returns empty string if nothing usable found.
+    Truncates at sentence boundaries. Returns empty string if nothing usable found.
 
     Args:
         body_text: The full body text of a card.
-        max_length: Maximum character length for the extracted description (default 120).
+        max_length: Maximum character length (default 200).
     """
     lines = body_text.split('\n')
 
-    # Try blockquote
+    # Try blockquote — take first meaningful one, truncate at sentence
     for line in lines:
         stripped = line.strip()
         if stripped.startswith('> '):
             desc = stripped[2:].strip()
             if len(desc) > 10:
-                return desc[:max_length]
+                return _truncate_to_sentence(desc, max_length)
 
-    # Try first non-heading, non-empty paragraph
+    # Try first non-heading, non-empty paragraph — ensure at least one sentence
     para_lines = []
     for line in lines:
         stripped = line.strip()
@@ -238,7 +250,7 @@ def extract_description_from_body(body_text, max_length=120):
             if para_lines:
                 desc = ' '.join(para_lines)
                 if len(desc) > 10:
-                    return desc[:max_length]
+                    return _truncate_to_sentence(desc, max_length)
                 para_lines = []
             continue
         para_lines.append(stripped)
@@ -246,7 +258,7 @@ def extract_description_from_body(body_text, max_length=120):
     if para_lines:
         desc = ' '.join(para_lines)
         if len(desc) > 10:
-            return desc[:max_length]
+            return _truncate_to_sentence(desc, max_length)
 
     return ''
 
@@ -276,3 +288,70 @@ def get_tags(yaml_str):
         return [m.group(1).strip('"').strip("'")]
 
     return []
+
+
+def discover_related_cards(wiki_dir, card_text, source_category=None,
+                           min_match_length=4, max_links=10):
+    """Discover existing wiki cards mentioned in the given text.
+
+    Performs case-insensitive substring matching of all existing card names
+    against the card body text. Returns top matches sorted by match length
+    (longer matches = more specific = more likely correct).
+
+    Args:
+        wiki_dir: Path to wiki/ directory.
+        card_text: Full body text of the newly imported card.
+        source_category: Category slug of the new card (excluded from results).
+        min_match_length: Minimum characters in a card name to consider.
+        max_links: Maximum number of links to return.
+
+    Returns:
+        List of (category, card_name, match_context) tuples.
+    """
+    SKIP_FILES = {'index.md', 'log.md'}
+    if not os.path.isdir(wiki_dir):
+        return []
+
+    # Scan all existing cards
+    all_cards = []
+    for entry in sorted(os.listdir(wiki_dir)):
+        cat_path = os.path.join(wiki_dir, entry)
+        if not os.path.isdir(cat_path):
+            continue
+        if source_category and entry == source_category:
+            continue
+        for fname in sorted(os.listdir(cat_path)):
+            if (fname.endswith('.md')
+                    and fname not in SKIP_FILES
+                    and not is_category_file(fname)):
+                all_cards.append((entry, fname[:-3]))
+
+    # Substring match against card body
+    results = []
+    text_lower = card_text.lower()
+    # Also try with hyphens/spaces normalized for fuzzy matching
+    text_normalized = text_lower.replace('-', ' ').replace('  ', ' ')
+
+    for cat, name in all_cards:
+        name_lower = name.lower()
+        if len(name) < min_match_length:
+            continue
+        # Match original name
+        idx = text_lower.find(name_lower)
+        # Also try with hyphens and spaces normalized
+        if idx < 0:
+            name_normalized = name_lower.replace('-', ' ').replace('  ', ' ')
+            # Only try normalized if the name actually changed
+            if name_normalized != name_lower:
+                idx = text_normalized.find(name_normalized)
+        if idx >= 0:
+            # Use the original text for context extraction
+            source_text = text_normalized if (idx < len(text_lower) and name_lower.replace('-', ' ') != name_lower) else text_lower
+            ctx_start = max(0, idx - 50)
+            ctx_end = min(len(card_text), idx + len(name) + 50)
+            context = card_text[ctx_start:ctx_end].replace('\n', ' ').strip()
+            results.append((cat, name, context))
+
+    # Sort by name length descending (longer = less likely false positive)
+    results.sort(key=lambda x: len(x[1]), reverse=True)
+    return results[:max_links]

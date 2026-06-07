@@ -215,66 +215,204 @@ def scan_category_cards(cat_path, half_life_default=30):
     return cards
 
 
+def _distill_common_themes(descriptions, max_themes=3):
+    """Extract common theme words from card descriptions via simple token frequency.
+
+    Tokenizes Chinese text by splitting on common delimiters, counts multi-char
+    tokens, and returns top-N as a theme list. Returns [] if descriptions too sparse.
+    """
+    import re as _re
+    if not descriptions:
+        return []
+    # Chinese-unfriendly stop words and single chars to skip
+    STOP = {'的', '了', '是', '和', '与', '在', '中', '及', '等', '或',
+            '通过', '进行', '提出', '使用', '一种', '可以', '基于', '实现',
+            'the', 'a', 'an', 'of', 'for', 'in', 'to', 'and', 'with', 'is', 'on',
+            'this', 'that', 'or', 'as', 'by', 'from'}
+    all_tokens = []
+    for desc in descriptions:
+        # Split on Chinese/English punctuation and spaces
+        tokens = _re.split(r'[，。、；：\s,.;:()（）\[\]\"\']+', desc.lower())
+        # Keep multi-char tokens that are not stop words
+        meaningful = [t for t in tokens if len(t) >= 2 and t not in STOP]
+        all_tokens.extend(meaningful)
+
+    if not all_tokens:
+        return []
+
+    freq = {}
+    for t in all_tokens:
+        freq[t] = freq.get(t, 0) + 1
+    sorted_tokens = sorted(freq, key=freq.get, reverse=True)
+    return sorted_tokens[:max_themes]
+
+
 def generate_category_header(cards):
     """Generate a 100-200 char Chinese category overview from its cards.
 
     Structure (3 segments):
-      1. Domain positioning — from tag statistics (~30 chars)
-      2. Semantic overview — top card descriptions aggregated (~60-120 chars)
-      3. Reading guidance — optional, for length floor (~15 chars)
+      1. Domain positioning — synthesized from tag statistics
+      2. Semantic overview — distilled themes from all card descriptions
+      3. Reading guidance — entry point suggestion
 
-    This is the Python fallback. LLM refinement triggered via Agent produces
-    richer output with cross-card logical structure and cross-category hints.
+    Cards are sorted alphabetically (not by strength) to ensure stable,
+    unbiased headers regardless of recent card activity.
     """
-    cards_sorted = sorted(cards, key=lambda c: c.get('strength', 0), reverse=True)
-    active_cards = [c for c in cards_sorted if c.get('strength', 0) >= 0.1]
-
-    if not active_cards:
-        active_cards = cards_sorted
-
+    # Stable sort by description presence then alphabetically — NOT by strength
+    cards_sorted = sorted(cards, key=lambda c: (
+        0 if c.get('description') else 1,
+        c['name'].lower()
+    ))
     total = len(cards_sorted)
 
     # --- Segment 1: Domain positioning ---
     tag_counts = defaultdict(int)
-    for c in active_cards:
+    for c in cards_sorted:
         for t in c.get('tags', []):
             tag_counts[t.lower()] += 1
 
     top_tags = sorted(tag_counts, key=tag_counts.get, reverse=True)[:6]
-    tag_str = '、'.join(top_tags) if top_tags else '多个领域'
-
-    header = f"本类别聚焦于 {tag_str} 等领域，共收录 {total} 张知识卡片。"
-
-    # --- Segment 2: Semantic overview from card descriptions ---
-    descs = [c['description'].strip() for c in active_cards[:5]
-             if c.get('description', '').strip()]
-
-    if descs:
-        n_descs = len(descs)
-        if n_descs == 1:
-            header += f" 核心主题：{descs[0]}"
-        elif n_descs == 2:
-            header += f" 涵盖：{descs[0]}；{descs[1]}。"
+    if top_tags:
+        primary = top_tags[0] if top_tags[0] else '多个领域'
+        if len(top_tags) >= 3:
+            tag_str = f"{'、'.join(top_tags[:3])}"
         else:
-            # 3+ descriptions: sample top 2 as entry points
-            header += f" 核心议题如：{descs[0]}；{descs[1]}。"
-            if total >= 6:
-                header += f" 其余 {total - 2} 张卡片延伸至相关子领域。"
-            else:
-                header += f" 其余卡片亦围绕相关主题展开。"
+            tag_str = '、'.join(top_tags)
+        if total <= 3:
+            header = f"本类别覆盖 {tag_str} 方向，收录 {total} 张卡片。"
+        else:
+            header = f"本类别覆盖 {tag_str} 等方向，共收录 {total} 张卡片。"
     else:
-        # No descriptions available — generic fallback
-        header += f" 各卡片覆盖该领域的核心概念与方法。"
+        header = f"本类别收录 {total} 张知识卡片，涵盖多个领域。"
+
+    # --- Segment 2: Semantic overview — distill themes from ALL descriptions ---
+    all_descs = [c['description'].strip() for c in cards_sorted
+                 if c.get('description', '').strip()]
+    themes = _distill_common_themes(all_descs)
+
+    if themes:
+        if len(themes) == 1:
+            header += f" 核心议题围绕 {themes[0]} 展开。"
+        elif len(themes) == 2:
+            header += f" 核心议题围绕 {themes[0]} 与 {themes[1]} 展开。"
+        else:
+            header += f" 核心议题围绕 {themes[0]}、{themes[1]} 及 {themes[2]} 等展开。"
+    elif all_descs:
+        # Descriptions exist but no themes extracted — use first as anchor
+        first = all_descs[0]
+        if len(first) > 60:
+            first = first[:60] + '...'
+        header += f" 代表性主题如：{first}"
+    else:
+        header += " 各卡片覆盖该领域的核心概念与方法。"
 
     # --- Segment 3: Reading guidance ---
+    first_card = cards_sorted[0]['name'] if cards_sorted else ''
     if total <= 2:
         header += " 可通过卡片正文深入了解具体内容。"
+    elif first_card:
+        header += f" 建议从 {first_card} 开始阅读以建立整体认知。"
 
     return header
 
 
-def generate_category_md(cat_slug, cards):
-    """Generate {cat}_category.md content in v2.0 format."""
+def compute_category_relationships(category_data):
+    """Compute cross-category relationships based on tag overlap (Jaccard).
+
+    For each category, builds a tag set from all its cards, then computes
+    pairwise Jaccard similarity to find meaningful overlaps.
+
+    Returns dict: {cat_slug: [(related_cat, jaccard_score, common_tags), ...]}
+    Each category keeps at most its top 3 related categories (score >= 0.1).
+    """
+    # Build per-category tag sets
+    cat_tags = {}
+    for cat_slug, cards in category_data.items():
+        tags = set()
+        for c in cards:
+            for t in c.get('tags', []):
+                tags.add(t.lower())
+        cat_tags[cat_slug] = tags
+
+    # Pairwise Jaccard
+    relationships = {slug: [] for slug in category_data}
+    cats = sorted(category_data.keys())
+
+    for i, cat_a in enumerate(cats):
+        tags_a = cat_tags[cat_a]
+        if not tags_a:
+            continue
+        for cat_b in cats[i + 1:]:
+            tags_b = cat_tags[cat_b]
+            if not tags_b:
+                continue
+            intersection = tags_a & tags_b
+            if not intersection:
+                continue
+            union = tags_a | tags_b
+            jaccard = len(intersection) / len(union)
+            if jaccard >= 0.1:
+                common = sorted(intersection)[:3]
+                relationships[cat_a].append((cat_b, round(jaccard, 2), common))
+                relationships[cat_b].append((cat_a, round(jaccard, 2), common))
+
+    # Sort and limit to top 3 per category
+    for slug in relationships:
+        relationships[slug].sort(key=lambda x: x[1], reverse=True)
+        relationships[slug] = relationships[slug][:3]
+
+    return relationships
+
+
+def generate_index_entry(cards, cat_slug, related_categories=None):
+    """Generate a scene-oriented index.md entry for a category.
+
+    Produces a shorter, structurally different description from the category
+    header: use-case oriented phrasing, ~100-150 chars, with cross-category
+    references appended when relationships exist.
+
+    Args:
+        cards: List of card dicts for this category.
+        cat_slug: Category slug name.
+        related_categories: List of (related_slug, score, common_tags) from
+            compute_category_relationships(), or None/empty.
+    """
+    total = len(cards)
+    card_names = sorted(c['name'] for c in cards)
+
+    # Use-case oriented sentence
+    if total <= 2:
+        first = card_names[0] if card_names else ''
+        entry = f"当需要深入了解 {first} 及其相关概念时，可通过此类别查阅。"
+    else:
+        # Pick 2 representative card names for the scope hint
+        scope = '、'.join(card_names[:2])
+        if len(card_names) > 2:
+            scope += '等'
+        entry = f"当需要理解 {scope} 核心概念与方法时，可查阅此类别。"
+    entry += f" 共收录 {total} 张卡片。"
+
+    # Append cross-category references
+    if related_categories:
+        refs = []
+        for rcat, _score, _tags in related_categories[:2]:
+            refs.append(f"[[{rcat}/{category_file_for(rcat).replace('.md','')}|{rcat}]]")
+        if refs:
+            entry += f" 关联类别：{'、'.join(refs)}。"
+
+    return entry
+
+
+def generate_category_md(cat_slug, cards, relationships=None):
+    """Generate {cat}_category.md content in v2.0 format.
+
+    Args:
+        cat_slug: Category slug.
+        cards: List of card dicts.
+        relationships: Optional dict from compute_category_relationships().
+            If provided and this category has entries, a ## Related Categories
+            section is inserted before ## Cards.
+    """
     cards_sorted = sorted(cards, key=lambda c: c['strength'], reverse=True)
     header = generate_category_header(cards_sorted)
 
@@ -283,9 +421,20 @@ def generate_category_md(cat_slug, cards):
         f'\n',
         f'<!-- AUTO -->\n',
         f'{header}\n',
-        f'\n',
-        f'## Cards\n',
     ]
+
+    # --- Related Categories (cross-category links) ---
+    related = (relationships or {}).get(cat_slug, [])
+    if related:
+        lines.append(f'\n')
+        lines.append(f'## Related Categories\n')
+        for rcat, score, tags in related:
+            tag_hint = '、'.join(tags) if tags else ''
+            cat_file = category_file_for(rcat).replace('.md', '')
+            lines.append(f'- [[{rcat}/{cat_file}|{rcat}]] — 共享概念：{tag_hint}\n')
+        lines.append(f'\n')
+
+    lines.append(f'## Cards\n')
 
     for c in cards_sorted:
         desc = c.get('description', '')
@@ -320,9 +469,13 @@ def extract_index_description(category_header):
     return result if result else category_header[:300]
 
 
-def generate_index_md(category_data):
-    """Generate wiki/index.md content in v2.0 format."""
-    today = datetime.now().strftime('%Y-%m-%d')
+def generate_index_md(category_data, relationships=None):
+    """Generate wiki/index.md content in v2.0 format.
+
+    Uses generate_index_entry() for scene-oriented entries (structurally
+    different from category headers) with optional cross-category references.
+    """
+    rel = relationships or {}
 
     lines = [
         f'# Knowledge Index\n',
@@ -334,10 +487,8 @@ def generate_index_md(category_data):
 
     for cat in sorted(category_data.keys()):
         cards = category_data[cat]
-        # Generate the same header that would go into the category file
-        header = generate_category_header(cards)
-        index_desc = extract_index_description(header)
         cat_file = category_file_for(cat).replace('.md', '')
+        index_desc = generate_index_entry(cards, cat, rel.get(cat, []))
         lines.append(f'- [[{cat}/{cat_file}|{cat}]]\n')
         if index_desc:
             lines.append(f'  {index_desc}\n')
@@ -610,12 +761,15 @@ def main():
         # Count newly generated descriptions
         desc_generated_count += sum(1 for c in cards if c.get('description') and c.get('modified'))
 
-    # Phase 2: Generate {cat}_category.md files
+    # Phase 1.5: Compute cross-category relationships from tag overlap
+    relationships = compute_category_relationships(category_data)
+
+    # Phase 2: Generate {cat}_category.md files (with cross-category links)
     stale_descriptions = list(index_meta.get('stale_descriptions', []))
     for slug in category_data:
         cat_path = os.path.join(wiki_dir, slug)
         cat_md_path = os.path.join(cat_path, category_file_for(slug))
-        content = generate_category_md(slug, category_data[slug])
+        content = generate_category_md(slug, category_data[slug], relationships)
         write_with_auto_preserve(cat_md_path, content)
 
         # Update index metadata
@@ -631,10 +785,10 @@ def main():
 
     index_meta['stale_descriptions'] = stale_descriptions
 
-    # Phase 3: Generate wiki/index.md
+    # Phase 3: Generate wiki/index.md (with cross-category references)
     if not target_category:
         index_path = os.path.join(wiki_dir, 'index.md')
-        index_content = generate_index_md(category_data)
+        index_content = generate_index_md(category_data, relationships)
         write_with_auto_preserve(index_path, index_content)
         index_meta['last_full_build'] = today
     elif incremental:
@@ -645,8 +799,10 @@ def main():
                 all_data[slug] = category_data[slug]
             else:
                 all_data[slug] = scan_category_cards(cat_path, half_life)
+        # Recompute relationships for the full dataset
+        all_relationships = compute_category_relationships(all_data)
         index_path = os.path.join(wiki_dir, 'index.md')
-        index_content = generate_index_md(all_data)
+        index_content = generate_index_md(all_data, all_relationships)
         write_with_auto_preserve(index_path, index_content)
 
     # Save index metadata

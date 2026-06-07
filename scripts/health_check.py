@@ -16,6 +16,23 @@ from lib.yaml_utils import is_category_file, category_file_for
 SKIP_FILES = {'index.md', 'log.md'}
 
 
+def _extract_cards_section(content):
+    """Extract only the ## Cards section from a category file.
+
+    Avoids treating [[wiki-links]] in ## Related Categories or other sections
+    as card references during link validation and orphan detection.
+    """
+    cards_start = content.find('## Cards')
+    if cards_start < 0:
+        return ''
+    section = content[cards_start:]
+    # Stop at next ## heading or END-AUTO marker
+    next_boundary = re.search(r'\n## |<!-- END-AUTO -->', section[8:])
+    if next_boundary:
+        section = section[:8 + next_boundary.start()]
+    return section
+
+
 def safe_read_text(filepath):
     """Read file content safely. Returns (content, None) on success, (None, error_msg) on failure."""
     try:
@@ -143,8 +160,9 @@ if os.path.isdir(wiki_dir):
         if '<!-- AUTO -->' not in cat_content or '<!-- END-AUTO -->' not in cat_content:
             issues.append(f'{entry}/{category_file_for(entry)} missing AUTO markers')
 
-        # Extract card links
-        linked_cards = re.findall(r'\[\[([^\]]+?)\]\]', cat_content)
+        # Extract card links (only from ## Cards section)
+        cards_section = _extract_cards_section(cat_content)
+        linked_cards = re.findall(r'\[\[([^\]]+?)\]\]', cards_section)
         broken = []
         for card in linked_cards:
             card_file = os.path.join(cat_path, card + '.md')
@@ -181,7 +199,8 @@ if os.path.isdir(wiki_dir):
         if err:
             issues.append(err)
             continue
-        for link in re.findall(r'\[\[([^\]]+?)\]\]', cat_content):
+        cards_section = _extract_cards_section(cat_content)
+        for link in re.findall(r'\[\[([^\]]+?)\]\]', cards_section):
             linked_names.add(link)
 
     for card_name, cat in all_cards.items():
