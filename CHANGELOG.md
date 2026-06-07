@@ -4,6 +4,107 @@ All notable changes to Alaya will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.0] - 2026-06-07
+
+### Major Changes
+
+- **Modular subskill architecture**: Alaya redesigned from monolithic skill (~40KB) to modular subskill system. Core functionality split into 5 independent subskills that load on-demand, reducing initial context footprint by 80%.
+
+- **Main skill lightweight**: SKILL.md reduced from ~40KB to ~8KB. Main skill now focuses on initialization, command routing, and version coordination. Detailed protocols moved to subskills.
+
+- **On-demand subskill loading**: Subskills automatically load based on user intent detection:
+  - `alaya-retrieval` (v2.0.0): User asks questions, builds index
+  - `alaya-memory` (v1.0.0): Session boundaries, "save it"
+  - `alaya-persona` (v1.7.0): Persona creation, multi-persona discussion
+  - `alaya-import` (v1.0.0): File imports, batch operations
+  - `alaya-maintenance` (v1.0.0): Health checks, xunxi cycles
+
+- **Subskill version management**: Each subskill has independent versioning with explicit dependency declarations. Main skill performs compatibility checks at startup.
+
+### New Features
+
+- **Subskill status commands**: "list loaded skills", "check subskill versions"
+- **Manual subskill loading**: Users can explicitly load specific subskills
+- **Intelligent command routing**: Main skill auto-detects user intent and routes to appropriate subskill
+- **Version compatibility checking**: Automatic detection and reporting of version mismatches
+- **Custom subskill support**: Framework for users to create their own subskills
+
+### Performance Improvements
+
+| Context Usage | v2.x | v3.0 | Reduction |
+|:---|:---|:---|:---|
+| Initial session | ~40KB | ~8KB | 80% |
+| User query | ~40KB | ~15KB | 62% |
+| Persona creation | ~40KB | ~18KB | 55% |
+| Batch import | ~40KB | ~25KB | 37% |
+
+### Directory Structure
+
+```
+alaya/
+├── SKILL.md                    # Main skill (lightweight core)
+├── skills/                     # NEW: Subskill directory
+│   ├── alaya-retrieval/       # Knowledge retrieval
+│   ├── alaya-memory/          # Memory management
+│   ├── alaya-persona/         # Persona system
+│   ├── alaya-import/          # Import functionality
+│   └── alaya-maintenance/     # Maintenance tools
+├── scripts/                    # Unchanged: Python utilities
+├── manas/                      # Unchanged: Default personas
+├── templates/                  # Unchanged: Import templates
+└── config/                     # Unchanged: Default configs
+```
+
+### Documentation
+
+- **skills/README.md**: Subskill system overview
+- **MIGRATION_GUIDE.md**: Complete migration guide from v2.x to v3.0
+- **Updated SKILL.md**: Lightweight main skill documentation
+- **Subskill SKILL.md files**: Individual subskill documentation
+
+### Backward Compatibility
+
+- **100% data compatible**: All v2.x knowledge cards, personas, memories work unchanged
+- **No API changes**: All scripts continue to work as before
+- **Automatic migration**: Built-in migration wizard from v2.x to v3.0
+- **Graceful fallback**: Subskill missing → degrade to basic functionality + install prompt
+
+### Installation Methods
+
+- **Full installation**: "install this skill: https://github.com/DL-LEO/alaya" → installs all subskills
+- **Core-only installation**: "install alaya core only" → minimal footprint, subskills load on-demand
+- **Manual subskill loading**: "load alaya-retrieval skill" → explicit subskill loading
+
+### Migration
+
+- **Automatic upgrade**: "upgrade alaya to v3.0" → automatic backup + migration
+- **Manual migration**: Step-by-step guide in MIGRATION_GUIDE.md
+- **Rollback support**: Full restore path from backups
+
+### Added
+
+- `skills/` directory with 5 subskills
+- `skills/README.md` - Subskill system documentation
+- `MIGRATION_GUIDE.md` - v2.x to v3.0 migration guide
+- Subskill frontmatter with type, dependencies, triggers
+- Version compatibility checking in main skill
+- Command routing table in main skill
+
+### Changed
+
+- `SKILL.md` - Reduced from ~800 lines to ~300 lines (core only)
+- `SKILL_GUIDE.md` - Moved detailed protocols to subskills
+- `SKILL_REF.md` - Subskill-specific reference moved to individual subskills
+- `SKILL_FULL.md` - Auto-merged for single-file platforms (Cursor, Codex)
+
+### Technical Details
+
+- **Main skill responsibilities**: Init detection, command routing, version coordination, error handling
+- **Subskill isolation**: Each subskill owns its data directory and version
+- **Shared state`: All subskills share `ALAYA_ROOT` environment variable
+- **Trigger-based loading`: Keywords and signals determine when subskills load
+- **Graceful degradation**: Missing subskills → fallback + install prompt
+
 ## [2.0.0] - 2026-06-02
 
 ### Changed
