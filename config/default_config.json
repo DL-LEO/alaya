@@ -9,7 +9,7 @@
   "knowledge": {
     "version": "2.0.0",
     "top_k": 3,
-    "min_pool": 5,
+    "min_pool": 10,
     "max_cards_per_persona": 5,
     "half_life_default": 30,
     "strength_decay": 0.977,

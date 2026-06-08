@@ -343,7 +343,8 @@ You interact with Alaya entirely through conversation:
 | "health check" / "健康检查" | Check two-layer network integrity |
 | "补充卡片描述" / "补描述" | Auto-extract missing card descriptions |
 | "更新类别描述" | LLM regenerates category headers (100-200字, 3-segment) |
-| "更新索引描述" | LLM regenerates index.md entries (150-300字/category) |
+| "更新索引描述" | LLM refines all category refined blocks + syncs to index base |
+| "同步索引" / "构建索引" | Rebuild index.md from category refined content (instant) |
 | "审视分类结构" | BI checks category proliferation → suggests merges |
 | "create persona" / "创建角色" | Interactive 7-phase persona distillation |
 | "show config" / "查看配置" | Display current settings |
@@ -567,7 +568,8 @@ Agent：🏛️ "但'to attend'到底是什么意思？让我们追问……"
 | "健康检查" | 检查两层网络完整性 |
 | "补充卡片描述" | 自动提取缺失的卡片描述 |
 | "更新类别描述" | LLM 重新生成类别头部（100-200字，三段式） |
-| "更新索引描述" | LLM 重新生成 index.md 条目（150-300字/类别） |
+| "更新索引描述" | LLM 精化所有分类 refined 块并同步至 index |
+| "同步索引" / "构建索引" | 用分类 refined 内容重建 index.md（秒级） |
 | "审视分类结构" | BI 检查分类过度分裂 → 建议合并 |
 | "创建角色" | 7 阶段角色蒸馏 |
 | "查看配置" | 显示当前设置 |

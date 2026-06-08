@@ -150,7 +150,7 @@ If the saved `bi_notes.json` record contains `system_health` items, display them
 
 **Step 7 (隐式) — 索引刷新检查**: After save confirmation and BI notes display, check `.index_metadata.json`:
 - If `stale_descriptions` is non-empty → Agent proactively runs "更新类别描述" on stale categories
-- If `index_desync` detected by BI → Agent proactively runs "更新索引描述"
+- If `index_desync` detected by BI → Agent triggers "同步索引"
 
 ### When to Read Deeper Memory
 

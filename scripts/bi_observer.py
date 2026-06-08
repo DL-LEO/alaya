@@ -569,7 +569,7 @@ def _check_index_description_sync(wiki_dir, alaya_dir):
             "type": "index_desync",
             "severity": "low",
             "detail": f"检测到 {stale_count} 个类别的描述已更新但索引未同步",
-            "suggestion": "建议您对智能体说「更新索引描述」，智能体会根据最新类别描述提炼索引条目"
+            "suggestion": "请运行「python scripts/build_index.py --full」将分类精化描述同步至索引（index.md 已合并为单层 base 块，由 --full 统一生成）"
         }]
     return []
 

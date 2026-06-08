@@ -18,9 +18,10 @@ trigger: "Read and display after initial setup completes (First Launch Detection
 "帮我构建索引"         → 扫描 wiki/ 并构建三层知识图谱（index → category → card）
 "导入这篇论文"         → 导入论文 PDF 或 arXiv 链接（自动摘要或全文提取）
 "批量导入 raw/"        → 从 raw/ 文件夹批量导入文档（MD/TXT/PDF）
+"同步索引" / "构建索引"  → 用分类 refined 内容重建 index.md（秒级）
 "补充卡片描述"         → 自动从正文提取缺失的卡片描述
 "更新类别描述"         → LLM 重新生成类别头部描述（100-200字三段式）
-"更新索引描述"         → LLM 重新生成 index.md 各分类的入口描述
+"更新索引描述"         → LLM 精化所有分类 refined 块并同步至 index（全局精化）
 "审视分类结构"         → BI 检查分类是否需要合并
 ```
 

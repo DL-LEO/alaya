@@ -317,44 +317,90 @@ def generate_category_header(cards):
 
 
 def compute_category_relationships(category_data):
-    """Compute cross-category relationships based on tag overlap (Jaccard).
+    """Compute cross-category relationships based on description text cosine similarity.
 
-    For each category, builds a tag set from all its cards, then computes
-    pairwise Jaccard similarity to find meaningful overlaps.
+    For each category, aggregates all card descriptions into a text corpus,
+    tokenizes and builds frequency vectors, then computes pairwise cosine
+    similarity. Replaces the old tag-Jaccard approach which was unreliable
+    due to inconsistent tagging.
 
-    Returns dict: {cat_slug: [(related_cat, jaccard_score, common_tags), ...]}
-    Each category keeps at most its top 3 related categories (score >= 0.1).
+    Returns dict: {cat_slug: [(related_cat, cosine_score, common_terms), ...]}
+    Threshold: cosine >= 0.15
+    Each category keeps at most its top 3 related categories.
     """
-    # Build per-category tag sets
-    cat_tags = {}
-    for cat_slug, cards in category_data.items():
-        tags = set()
-        for c in cards:
-            for t in c.get('tags', []):
-                tags.add(t.lower())
-        cat_tags[cat_slug] = tags
+    from collections import Counter
+    import math
+    import re as _re
 
-    # Pairwise Jaccard
+    STOP = {'的', '了', '是', '和', '与', '在', '中', '及', '等', '或',
+            '通过', '进行', '提出', '使用', '一种', '可以', '基于', '实现',
+            'the', 'a', 'an', 'of', 'for', 'in', 'to', 'and', 'with', 'is', 'on',
+            'this', 'that', 'or', 'as', 'by', 'from', 'we', '本文', '我们',
+            '方法', '问题', '模型', '数据', '任务', '不同', '提出', '一个',
+            '能够', '利用', '学习', '采用', '包括', '分析', '研究', '进行'}
+
+    def tokenize(text):
+        tokens = _re.split(r'[，。、；：\s,.;:()（）\[\]\"\'，。、—…·！？]+', text.lower())
+        return [t for t in tokens if len(t) >= 2 and t not in STOP]
+
+    def cosine_sim(vec_a, vec_b):
+        intersection = set(vec_a.keys()) & set(vec_b.keys())
+        if not intersection:
+            return 0, []
+        dot = sum(vec_a[w] * vec_b[w] for w in intersection)
+        norm_a = math.sqrt(sum(v * v for v in vec_a.values()))
+        norm_b = math.sqrt(sum(v * v for v in vec_b.values()))
+        if norm_a * norm_b == 0:
+            return 0, []
+        score = dot / (norm_a * norm_b)
+        # Extract common terms sorted by contribution
+        common = sorted(intersection, key=lambda w: vec_a[w] * vec_b[w], reverse=True)[:5]
+        return round(score, 3), common
+
+    # Build per-category description corpus
+    # Includes: card descriptions, card names (cross-domain signals),
+    # tags (curated keywords, strongest overlap signal), category name.
+    cat_corpora = {}
+    for cat_slug, cards in category_data.items():
+        texts = []
+        # Include category name as anchor signal
+        texts.append(cat_slug.replace('-', ' ').replace('_', ' '))
+        for c in cards:
+            desc = c.get('description', '')
+            if desc and len(desc) > 10:
+                texts.append(desc)
+            # Card name carries cross-domain signals
+            name = c['name'].replace('-', ' ').replace('_', ' ')
+            texts.append(name)
+            # Tags are curated keywords — strong overlap signal between domains
+            for tag in c.get('tags', []):
+                texts.append(tag.lower().replace('-', ' ').replace('_', ' '))
+        cat_corpora[cat_slug] = texts
+
+    # Tokenize and build frequency vectors
+    cat_vectors = {}
+    for slug, texts in cat_corpora.items():
+        tokens = []
+        for t in texts:
+            tokens.extend(tokenize(t))
+        cat_vectors[slug] = Counter(tokens)
+
+    # Pairwise cosine similarity
     relationships = {slug: [] for slug in category_data}
     cats = sorted(category_data.keys())
 
     for i, cat_a in enumerate(cats):
-        tags_a = cat_tags[cat_a]
-        if not tags_a:
+        vec_a = cat_vectors.get(cat_a, Counter())
+        if not vec_a:
             continue
         for cat_b in cats[i + 1:]:
-            tags_b = cat_tags[cat_b]
-            if not tags_b:
+            vec_b = cat_vectors.get(cat_b, Counter())
+            if not vec_b:
                 continue
-            intersection = tags_a & tags_b
-            if not intersection:
-                continue
-            union = tags_a | tags_b
-            jaccard = len(intersection) / len(union)
-            if jaccard >= 0.1:
-                common = sorted(intersection)[:3]
-                relationships[cat_a].append((cat_b, round(jaccard, 2), common))
-                relationships[cat_b].append((cat_a, round(jaccard, 2), common))
+            score, common = cosine_sim(vec_a, vec_b)
+            if score >= 0.15:
+                relationships[cat_a].append((cat_b, score, common))
+                relationships[cat_b].append((cat_a, score, common))
 
     # Sort and limit to top 3 per category
     for slug in relationships:
@@ -364,33 +410,51 @@ def compute_category_relationships(category_data):
     return relationships
 
 
-def generate_index_entry(cards, cat_slug, related_categories=None):
+def generate_index_entry(cards, cat_slug, related_categories=None, category_header=None):
     """Generate a scene-oriented index.md entry for a category.
 
-    Produces a shorter, structurally different description from the category
-    header: use-case oriented phrasing, ~100-150 chars, with cross-category
-    references appended when relationships exist.
+    Uses the category header content as the primary description (much richer
+    than bare card names), with cross-category references appended when
+    relationships exist.
 
     Args:
         cards: List of card dicts for this category.
         cat_slug: Category slug name.
-        related_categories: List of (related_slug, score, common_tags) from
+        related_categories: List of (related_slug, score, common_terms) from
             compute_category_relationships(), or None/empty.
+        category_header: The category header text (from generate_category_header),
+            used as the primary description content.
     """
     total = len(cards)
-    card_names = sorted(c['name'] for c in cards)
 
-    # Use-case oriented sentence
-    if total <= 2:
-        first = card_names[0] if card_names else ''
-        entry = f"当需要深入了解 {first} 及其相关概念时，可通过此类别查阅。"
+    # Use category header as the primary description source
+    if category_header and len(category_header) > 20:
+        entry = category_header
+        # Sentence-boundary truncation at 400 chars (refined content is 200-400 chars)
+        if len(entry) > 400:
+            parts = re.split(r'(?<=[。.])', entry)
+            result = ''
+            for p in parts:
+                if len(result) + len(p) <= 400:
+                    result += p
+                else:
+                    break
+            entry = result if result else entry[:397] + '...'
     else:
-        # Pick 2 representative card names for the scope hint
-        scope = '、'.join(card_names[:2])
-        if len(card_names) > 2:
-            scope += '等'
-        entry = f"当需要理解 {scope} 核心概念与方法时，可查阅此类别。"
-    entry += f" 共收录 {total} 张卡片。"
+        # Fallback: original logic using card names
+        card_names = sorted(c['name'] for c in cards)
+        if total <= 2:
+            first = card_names[0] if card_names else ''
+            entry = f"当需要深入了解 {first} 及其相关概念时，可通过此类别查阅。"
+        else:
+            scope = '、'.join(card_names[:2])
+            if len(card_names) > 2:
+                scope += '等'
+            entry = f"当需要理解 {scope} 核心概念与方法时，可查阅此类别。"
+    # Only append card count if the header doesn't already include it
+    has_count = bool(re.search(r'\d+\s*张卡片?', entry)) or '共收录' in entry
+    if not has_count:
+        entry += f" 共收录 {total} 张卡片。"
 
     # Append cross-category references
     if related_categories:
@@ -404,14 +468,14 @@ def generate_index_entry(cards, cat_slug, related_categories=None):
 
 
 def generate_category_md(cat_slug, cards, relationships=None):
-    """Generate {cat}_category.md content in v2.0 format.
+    """Generate {cat}_category.md content with <!-- AUTO (base) --> markers.
 
     Args:
         cat_slug: Category slug.
         cards: List of card dicts.
         relationships: Optional dict from compute_category_relationships().
             If provided and this category has entries, a ## Related Categories
-            section is inserted before ## Cards.
+            section is inserted before ## Cards with similarity scores.
     """
     cards_sorted = sorted(cards, key=lambda c: c['strength'], reverse=True)
     header = generate_category_header(cards_sorted)
@@ -419,19 +483,19 @@ def generate_category_md(cat_slug, cards, relationships=None):
     lines = [
         f'# {cat_slug}\n',
         f'\n',
-        f'<!-- AUTO -->\n',
+        f'<!-- AUTO (base) -->\n',
         f'{header}\n',
     ]
 
-    # --- Related Categories (cross-category links) ---
+    # --- Related Categories (cross-category links, from description cosine) ---
     related = (relationships or {}).get(cat_slug, [])
     if related:
         lines.append(f'\n')
         lines.append(f'## Related Categories\n')
-        for rcat, score, tags in related:
-            tag_hint = '、'.join(tags) if tags else ''
+        for rcat, score, terms in related:
+            term_hint = '、'.join(terms) if terms else ''
             cat_file = category_file_for(rcat).replace('.md', '')
-            lines.append(f'- [[{rcat}/{cat_file}|{rcat}]] — 共享概念：{tag_hint}\n')
+            lines.append(f'- [[{rcat}/{cat_file}|{rcat}]] — 共享概念：{term_hint} [相似度: {score}]\n')
         lines.append(f'\n')
 
     lines.append(f'## Cards\n')
@@ -443,7 +507,7 @@ def generate_category_md(cat_slug, cards, relationships=None):
         else:
             lines.append(f'- [[{c["name"]}]]\n')
 
-    lines.append('\n<!-- END-AUTO -->\n')
+    lines.append('\n<!-- AUTO (base) -->\n')
     return ''.join(lines)
 
 
@@ -469,18 +533,36 @@ def extract_index_description(category_header):
     return result if result else category_header[:300]
 
 
-def generate_index_md(category_data, relationships=None):
-    """Generate wiki/index.md content in v2.0 format.
+def read_refined_block(filepath):
+    """Extract <!-- AUTO (refined) --> block content from a file.
 
-    Uses generate_index_entry() for scene-oriented entries (structurally
-    different from category headers) with optional cross-category references.
+    Returns the stripped text content if found, None otherwise.
+    """
+    if not os.path.exists(filepath):
+        return None
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    match = re.search(
+        r'<!--\s*AUTO\s*\(refined\)\s*-->([\s\S]*?)<!--\s*AUTO\s*\(refined\)\s*-->',
+        content
+    )
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def generate_index_md(category_data, relationships=None, refined_descriptions=None):
+    """Generate wiki/index.md content in v2.0 format with <!-- AUTO (base) --> markers.
+
+    Uses generate_index_entry() with category headers for richer descriptions,
+    and cross-category references when relationships exist.
     """
     rel = relationships or {}
 
     lines = [
         f'# Knowledge Index\n',
         f'\n',
-        f'<!-- AUTO -->\n',
+        f'<!-- AUTO (base) -->\n',
         f'## Categories\n',
         f'\n',
     ]
@@ -488,7 +570,12 @@ def generate_index_md(category_data, relationships=None):
     for cat in sorted(category_data.keys()):
         cards = category_data[cat]
         cat_file = category_file_for(cat).replace('.md', '')
-        index_desc = generate_index_entry(cards, cat, rel.get(cat, []))
+        # Use refined content if available, fall back to statistical header
+        if refined_descriptions and cat in refined_descriptions:
+            cat_header = refined_descriptions[cat]
+        else:
+            cat_header = generate_category_header(cards)
+        index_desc = generate_index_entry(cards, cat, rel.get(cat, []), category_header=cat_header)
         lines.append(f'- [[{cat}/{cat_file}|{cat}]]\n')
         if index_desc:
             lines.append(f'  {index_desc}\n')
@@ -496,22 +583,54 @@ def generate_index_md(category_data, relationships=None):
             lines.append(f'  _{len(cards)} 张卡片_\n')
         lines.append('\n')
 
-    lines.append('<!-- END-AUTO -->\n')
+    lines.append('<!-- AUTO (base) -->\n')
     return ''.join(lines)
 
 
-def write_with_auto_preserve(filepath, new_auto_content):
-    """Write file. Preserves <!-- MANUAL --> blocks and restores them near original positions.
+def write_with_auto_preserve(filepath, new_auto_content, skip_refined=False):
+    """Write file, preserving <!-- AUTO (refined) --> and <!-- MANUAL --> blocks.
+
+    Replaces only the <!-- AUTO (base) --> block (or legacy <!-- AUTO --> block).
+    LLM-generated refined descriptions in <!-- AUTO (refined) --> are preserved
+    across build_index runs.
+
+    The new_auto_content CAN include or omit the <!-- AUTO (base) --> markers:
+    - If markers present: content between them is extracted as the base body
+    - If markers absent: entire content is treated as the base body
+
+    When skip_refined=True (used for index.md), the <!-- AUTO (refined) --> block
+    is NOT written to the output — only the base block. This avoids duplication
+    when the base block already incorporates refined content from category files.
 
     Each MANUAL block is matched to its preceding heading/context in the old file.
     If the same context exists in the new content, the block is placed right after it.
     Otherwise, the block is appended at the end (preserving backward compatibility).
     """
     manual_blocks = []
+    refined_content = None
+    preamble = ''
+
+    # Determine preamble from existing file
     if os.path.exists(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             existing = f.read()
-        # Extract manual blocks with position context
+
+        # Extract preamble (everything before first AUTO marker)
+        auto_match = re.search(r'<!--\s*AUTO', existing)
+        if auto_match:
+            preamble = existing[:auto_match.start()]
+        else:
+            preamble = existing.rstrip() + '\n\n'
+
+        # Extract refined block (LLM-generated, preserved as-is)
+        refined_match = re.search(
+            r'<!--\s*AUTO\s*\(refined\)\s*-->([\s\S]*?)<!--\s*AUTO\s*\(refined\)\s*-->',
+            existing
+        )
+        if refined_match:
+            refined_content = refined_match.group(1).strip()
+
+        # Extract MANUAL blocks with position context
         i = 0
         while True:
             start = existing.find('<!-- MANUAL -->', i)
@@ -535,9 +654,39 @@ def write_with_auto_preserve(filepath, new_auto_content):
             content = existing[start + len('<!-- MANUAL -->'):end]
             manual_blocks.append((context_key, content))
             i = end + len('<!-- END-MANUAL -->')
+    else:
+        # New file: extract heading from new content as preamble
+        first_newline = new_auto_content.find('\n')
+        if first_newline >= 0:
+            preamble = new_auto_content[:first_newline + 1]
+        else:
+            preamble = new_auto_content + '\n\n'
 
-    # Insert MANUAL blocks into new content at context-matched positions
-    result = new_auto_content
+    # Extract base body from new_auto_content (strip markers if present)
+    base_match = re.search(
+        r'<!--\s*AUTO\s*\(base\)\s*-->([\s\S]*?)<!--\s*AUTO\s*\(base\)\s*-->',
+        new_auto_content
+    )
+    if base_match:
+        base_body = base_match.group(1).strip()
+    else:
+        # No markers — entire content is the base body
+        base_body = new_auto_content.strip()
+
+    # Build output: preamble + [refined] + base + manual
+    result = preamble.rstrip() + '\n\n'
+
+    # For index.md, skip the refined block to avoid duplication with base
+    if not skip_refined and refined_content:
+        result += '<!-- AUTO (refined) -->\n'
+        result += refined_content + '\n'
+        result += '<!-- AUTO (refined) -->\n\n'
+
+    result += '<!-- AUTO (base) -->\n'
+    result += base_body + '\n'
+    result += '<!-- AUTO (base) -->\n\n'
+
+    # Insert MANUAL blocks into result at context-matched positions
     for context_key, block_content in manual_blocks:
         block_marker = '\n<!-- MANUAL -->' + block_content + '<!-- END-MANUAL -->\n'
         if context_key and context_key in result:
@@ -785,11 +934,22 @@ def main():
 
     index_meta['stale_descriptions'] = stale_descriptions
 
+    # Phase 2.5: Collect <!-- AUTO (refined) --> blocks from category files
+    # so generate_index_md can use refined content instead of statistical headers
+    refined_descriptions = {}
+    for slug in category_data:
+        cat_path = os.path.join(wiki_dir, slug)
+        cat_md_path = os.path.join(cat_path, category_file_for(slug))
+        if os.path.exists(cat_md_path):
+            refined = read_refined_block(cat_md_path)
+            if refined and len(refined) > 50:
+                refined_descriptions[slug] = refined
+
     # Phase 3: Generate wiki/index.md (with cross-category references)
     if not target_category:
         index_path = os.path.join(wiki_dir, 'index.md')
-        index_content = generate_index_md(category_data, relationships)
-        write_with_auto_preserve(index_path, index_content)
+        index_content = generate_index_md(category_data, relationships, refined_descriptions)
+        write_with_auto_preserve(index_path, index_content, skip_refined=True)
         index_meta['last_full_build'] = today
     elif incremental:
         # Rebuild full index to reflect all categories
@@ -799,11 +959,20 @@ def main():
                 all_data[slug] = category_data[slug]
             else:
                 all_data[slug] = scan_category_cards(cat_path, half_life)
+        # Collect refined for all categories (including those not rebuilt)
+        all_refined = dict(refined_descriptions)  # start with just-built
+        for slug, cat_path in categories:
+            if slug not in all_refined:
+                cat_md_path = os.path.join(cat_path, category_file_for(slug))
+                if os.path.exists(cat_md_path):
+                    refined = read_refined_block(cat_md_path)
+                    if refined and len(refined) > 50:
+                        all_refined[slug] = refined
         # Recompute relationships for the full dataset
         all_relationships = compute_category_relationships(all_data)
         index_path = os.path.join(wiki_dir, 'index.md')
-        index_content = generate_index_md(all_data, all_relationships)
-        write_with_auto_preserve(index_path, index_content)
+        index_content = generate_index_md(all_data, all_relationships, all_refined)
+        write_with_auto_preserve(index_path, index_content, skip_refined=True)
 
     # Save index metadata
     save_index_meta(alaya_dir, index_meta)

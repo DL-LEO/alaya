@@ -16,6 +16,13 @@ trigger_keywords:
   - run xunxi
   - 修复链接
   - fix links
+  - 命令
+  - commands
+  - 常用命令
+  - 识海命令
+  - 识海常用命令
+  - alaya命令
+  - alaya常用命令
 trigger_commands:
   - BI report
   - BI观察
@@ -29,6 +36,23 @@ trigger_commands:
 > **维护识海系统的健康与活力**
 >
 > 通过熏习、健康检查和 BI 观察，保持知识库的生长和系统的健康。
+
+## 命令速查
+
+### 触发
+
+用户说：`命令` / `常用命令` / `识海命令` / `识海常用命令` / `alaya命令` / `alaya常用命令` / `commands`
+
+### 功能
+
+展示 Alaya 所有自然语言触发的常用命令速查表。命令按子系统分为 5 组：检索与索引、角色、导入、记忆、维护。每组以三段式表格呈现：触发词 → 功能说明 → 什么时候用。
+
+### 执行
+
+1. 读取 `CHEATSHEET.md`
+2. **一次性完整输出**所有分组，每组以表格形式呈现
+3. 关键分组（检索与索引、导入等）需详细，其他分组可略简
+4. 输出格式参见 CHEATSHEET.md，用 markdown 表格组织
 
 ## 熏习系统 (Rule C)
 
@@ -341,7 +365,7 @@ read alaya/config.json
   "knowledge": {
     "version": "2.0.0",
     "top_k": 3,
-    "min_pool": 5,
+    "min_pool": 10,
     "max_cards_per_persona": 5,
     "half_life_default": 30
   },
@@ -397,12 +421,12 @@ read alaya/config.json
 
 ## 维护命令速查
 
-| 命令                    | 脚本                              | 频率           |
+| 命令                    | 脚本/方式                        | 频率           |
 | :---------------------- | :-------------------------------- | :------------- |
-| 构建索引                | `build_index.py --full`          | 导入后/索引损坏 |
+| 同步索引                | `build_index.py --full`          | 日常/索引损坏 |
 | 补充描述                | `build_index.py --full`          | 描述缺失时     |
 | 更新类别描述            | Agent LLM 生成                    | BI 检测到陈旧   |
-| 更新索引描述            | Agent LLM 生成                    | BI 检测到不同步 |
+| 更新索引描述            | Agent LLM 精化分类 refined + `--full` | 描述质量全面提升 |
 | 运行熏习 (Level 2)      | `perfume.py --level 2`           | 话题切换/手动  |
 | 健康检查                | `health_check.py`                | 每周/异常时     |
 | 修复链接                | `fix_links.py`                   | 链接问题时     |

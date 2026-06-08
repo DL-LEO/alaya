@@ -16,6 +16,12 @@ trigger_keywords:
   - clone persona
   - delete persona
   - 各位大佬
+  - 各位大佬出来啦
+  - 识海群聊
+  - 一起群聊
+  - 开个群聊
+  - 群聊模式
+  - 大家来聊聊
   - group discussion
   - show personas
   - list personas
@@ -203,7 +209,7 @@ ls alaya/manas/*.json
 
 ### 触发
 
-用户说诸如 "各位大佬", "叫XX和XX讨论", "请几个人聊聊", "Feynman and Buddha, discuss X"，或一次点名 3+ 个角色。
+用户说诸如 "各位大佬", "识海群聊", "各位大佬出来啦", "一起群聊", "开个群聊", "群聊模式", "大家来聊聊", "叫XX和XX讨论", "请几个人聊聊", "Feynman and Buddha, discuss X"，或一次点名 3+ 个角色。
 
 ### 协调器 (识海·主持人)
 

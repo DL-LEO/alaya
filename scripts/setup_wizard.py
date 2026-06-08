@@ -281,7 +281,7 @@ config = {
     "knowledge": {
         "version": "2.0.0",
         "top_k": 3,
-        "min_pool": 5,
+        "min_pool": 10,
         "half_life_default": 30,
         "strength_decay": 0.977,
         "sleep_threshold": 0.1,
@@ -335,9 +335,9 @@ if k.isdigit():
 print(f"  -> top_K = {config['knowledge']['top_k']}")
 
 # Q4b: min_pool
-print("\n  Minimum candidate pool size (min_pool, default 5)")
+print("\n  Minimum candidate pool size (min_pool, default 10)")
 print("  If Tier 2 first pass yields fewer than min_pool cards, add more categories.")
-mp = input("  Value [default: 5]: ").strip()
+mp = input("  Value [default: 10]: ").strip()
 if mp.isdigit():
     config["knowledge"]["min_pool"] = int(mp)
 print(f"  -> min_pool = {config['knowledge']['min_pool']}")

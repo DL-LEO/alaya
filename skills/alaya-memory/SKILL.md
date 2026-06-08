@@ -295,7 +295,7 @@ Step 3-5 完成后，显示：
 
 保存确认和 BI 注释显示后，检查 `.index_metadata.json`：
 - 如果 `stale_descriptions` 非空 → Agent 主动运行"更新类别描述"于陈旧分类
-- 如果 BI 检测到 `index_desync` → Agent 主动运行"更新索引描述"
+- 如果 BI 检测到 `index_desync` → Agent 触发「同步索引」
 
 ---
 

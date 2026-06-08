@@ -14,6 +14,8 @@ trigger_keywords:
 trigger_commands:
   - build index
   - 构建索引
+  - 同步索引
+  - sync index
   - 补充描述
   - 更新类别描述
   - 更新索引描述
@@ -88,6 +90,8 @@ BI 观察者 (如果 bi_enabled)：
 
 ```
 读取 wiki/index.md (~1-2KB)
+    优先读取 <!-- AUTO (refined) --> 块 (LLM 精化描述，更丰富)
+    若无 refined 块，回退读取 <!-- AUTO (base) --> 块 (脚本生成)
     每个分类条目：[[{cat}/{cat}_category|{cat}]] + 描述段落
     ↓
 LLM 将用户问题与分类名和描述进行语义匹配
@@ -104,13 +108,15 @@ LLM 将用户问题与分类名和描述进行语义匹配
 ### TIER 2: 构建候选池 (角色独立)
 
 ```
-为每个选中的分类读取 wiki/{category}/{category}_category.md ## Cards 部分
-    从 "## Cards" 标记开始读取 (跳过分类头节省 tokens)
+为每个选中的分类读取 wiki/{category}/{category}_category.md
+    优先读取 <!-- AUTO (refined) --> 块 (LLM 精化分类描述)
+    若无 refined 块，回退读取 <!-- AUTO (base) --> 块
+    然后定位 ## Cards 部分
     每行：[[CardName]] — 一句话描述 (~80字/卡，~1KB 总共 10 卡)
     ↓
 LLM 将查询与卡片描述进行语义匹配
     → 选择匹配查询的卡片 → 构建候选池
-    → min_pool = config.knowledge.min_pool (默认 5)
+    → min_pool = config.knowledge.min_pool (默认 10)
     ↓
 如果 |pool| < min_pool:
     → 回退 A：返回 index.md，使用第 1 层排名的下一个分类，选择更多卡片
@@ -183,6 +189,8 @@ Above discussion references:
 
 Python `build_index.py` 提供机械回退；LLM 提示产生精化版本。
 
+> **v3 优化**：`"同步索引"` → 直接执行 `--full` 用当前 refined 内容重建 index.md（无需 LLM，秒级完成）。
+
 ---
 
 ## 描述更新协议
@@ -193,8 +201,9 @@ Python `build_index.py` 提供机械回退；LLM 提示产生精化版本。
 
 ```
 1. 读取目标分类所有卡片的 description 字段
-2. LLM 生成 100-200 字三段式中文描述
-3. 写入 {cat}_category.md 的 <!-- AUTO --> 块
+2. LLM 生成 150-300 字中文分类概览
+3. 写入 {cat}_category.md 的 <!-- AUTO (refined) --> 块
+   (不会覆盖 <!-- AUTO (base) -->，build_index 只更新 base 层)
 ```
 
 **提示模板**：
@@ -203,7 +212,7 @@ Python `build_index.py` 提供机械回退；LLM 提示产生精化版本。
 输入：分类 slug + {cat}_category.md ## Cards 部分的所有卡片描述
 
 生成中文分类概览。约束：
-- 100-200 字
+- 150-300 字
 - 3 段结构：
   ① 领域定位 (1句)：本类别在知识体系中的位置与学术/实践语境
   ② 核心议题 (2-3句)：从卡片描述识别的主要主题线，标注卡片间互补/递进/对立关系
@@ -212,7 +221,7 @@ Python `build_index.py` 提供机械回退；LLM 提示产生精化版本。
 - 以散文书写，非要点
 - 自然时交叉引用其他分类 ("与XX类别在YY概念上交叉")
 
-输出：将生成的文本写入分类文件的 <!-- AUTO --> 块。
+输出：将生成的文本写入分类文件的 <!-- AUTO (refined) --> 块。
 保留任何现有 <!-- MANUAL --> 块。
 不要修改 ## Cards 部分。
 ```
@@ -221,30 +230,51 @@ Python `build_index.py` 提供机械回退；LLM 提示产生精化版本。
 
 **触发**：用户说 "更新索引描述"
 
+> **v3 优化后的工作流**：index.md 已合并为单层 `<!-- AUTO (base) -->`，描述来自各分类的 refined 块。
+> 所以"更新索引描述"= 先精化分类 refined 块 → 再 `--full` 同步到 index.md，解决理解一次，一次到位。
+
 ```
-1. 读取所有分类的头部描述 (从 {cat}_category.md <!-- AUTO --> 块)
-2. LLM 为每个分类生成精化条目
-3. 写入 wiki/index.md 的 <!-- AUTO --> 块
+1. 读取所有分类的头部描述 (从 {cat}_category.md <!-- AUTO (refined) --> 块)
+2. LLM 为每个分类生成精化描述
+3. 逐一写入各分类文件的 <!-- AUTO (refined) --> 块 (单数据源)
+4. 运行 python scripts/build_index.py --full 同步至 wiki/index.md (base 块)
 ```
+
+**单分类模式**：`"更新索引描述 世界模型"` — 仅精化指定分类的 refined 块，然后执行 `--full` 同步到索引。
 
 **提示模板**：
 
 ```markdown
-输入：wiki/index.md 当前内容 + 所有分类头部 (从 {cat}_category.md <!-- AUTO --> 块)
+输入：所有 {cat}_category.md 的 <!-- AUTO (refined) --> 块当前内容
 
-为索引中的每个分类生成精化条目。约束：
+为每个分类生成精化分类描述。约束：
 - 每个分类 150-300 字
 - 内容要求：
-  ① 类别概览 (从分类头蒸馏，非照抄，换个角度表述)
-  ② 与其他类别的交叉点 (如"与XX类别在YY概念上交叉" — 仅确有关联时写)
+  ① 类别概览 (从分类头蒸馏，换个角度表述)
+  ② 涵盖的核心议题/方向
   ③ 适用场景提示 (什么类型的问题应检索此类别)
-- 每个条目以 wiki-link 行开始，后跟描述段落
 - 以散文书写，非要点
 - 如果分类只有 1-2 张卡片，保持条目简洁 (≈150字)
 
-输出：将所有条目写入 wiki/index.md 的 <!-- AUTO --> 块 (Categories 部分)。
-保留任何现有 <!-- MANUAL --> 块。
+输出：逐一写入各 {cat}_category.md 的 <!-- AUTO (refined) --> 块。
+不要修改 ## Cards 部分。
+完成后运行 python scripts/build_index.py --full 以同步至 index.md。
 ```
+
+---
+
+### 同步索引
+
+**触发**：用户说 "同步索引"（或 "构建索引" / "sync index" / "build index"）
+
+```
+1. 运行 python scripts/build_index.py --full
+2. 扫描所有分类，用 <!-- AUTO (refined) --> 内容重建 index.md base 块
+3. 同时补充缺失的卡片 description 字段
+4. 不会覆盖任何 refined 或 MANUAL 内容
+```
+
+**注意**：`同步索引` 只重建 index.md，**不会修改**分类文件的 refined 块。如需提升描述质量，使用 `更新索引描述`。
 
 ---
 
@@ -285,7 +315,7 @@ python scripts/build_index.py --full  # 自动检测并生成
   "knowledge": {
     "version": "2.0.0",
     "top_k": 3,
-    "min_pool": 5,
+    "min_pool": 10,
     "max_cards_per_persona": 5,
     "half_life_default": 30
   }
@@ -295,7 +325,7 @@ python scripts/build_index.py --full  # 自动检测并生成
 | 字段                   | 默认值 | 说明                       |
 | :--------------------- | :----- | :------------------------- |
 | `top_k`               | 3      | 第 1 层选择的分类数        |
-| `min_pool`            | 5      | 第 2 层最小候选池大小      |
+| `min_pool`            | 10     | 第 2 层最小候选池大小      |
 | `max_cards_per_persona` | 5      | 第 3 层每角色最大卡片数    |
 | `half_life_default`   | 30     | 新卡片默认半衰期 (天)      |
 
@@ -314,7 +344,7 @@ python scripts/build_index.py --full  # 自动检测并生成
 
 会话边界保存后，主技能检查 `.index_metadata.json`：
 - 如果 `stale_descriptions` 非空 → 自动触发 "更新类别描述"
-- 如果检测到 `index_desync` → 自动触发 "更新索引描述"
+- 如果检测到 `index_desync` → 自动执行 "同步索引" (`--full`)
 
 ---
 

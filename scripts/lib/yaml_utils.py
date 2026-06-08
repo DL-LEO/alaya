@@ -225,16 +225,59 @@ def _truncate_to_sentence(text, max_length):
 def extract_description_from_body(body_text, max_length=200):
     """Extract a one-line description from card body text.
 
-    Tries: 1) first blockquote line, 2) first non-empty non-heading paragraph.
+    Priority:
+    1. Content under ## Abstract / ## 摘要 heading
+    2. First paragraph containing '本文提出' / '我们提出' (paper contribution)
+    3. First blockquote (original fallback)
+    4. First non-empty non-heading paragraph (last resort)
+
     Truncates at sentence boundaries. Returns empty string if nothing usable found.
 
     Args:
         body_text: The full body text of a card.
         max_length: Maximum character length (default 200).
     """
+    import re as _re
     lines = body_text.split('\n')
 
-    # Try blockquote — take first meaningful one, truncate at sentence
+    # 1. Look for Abstract / 摘要 / TL;DR section
+    abstract_mode = False
+    abstract_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if _re.match(r'^#{1,4}\s*(Abstract|摘要|TL;DR|TLDR|一句话简介|概要)', stripped):
+            abstract_mode = True
+            continue
+        if abstract_mode:
+            if stripped.startswith('#') and not stripped.startswith('##'):
+                break
+            if stripped and not stripped.startswith('> '):
+                abstract_lines.append(stripped)
+            elif not stripped and abstract_lines:
+                break
+    if abstract_lines:
+        desc = ' '.join(abstract_lines)
+        if len(desc) > 10:
+            return _truncate_to_sentence(desc, max_length)
+
+    # 2. Find paragraph with '本文提出' / '我们提出' / contribution keywords
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if any(kw in stripped for kw in ['本文提出', '我们提出', '本文介绍',
+                                          '本文主要', '本文旨在',
+                                          'This paper proposes', 'We propose',
+                                          'this paper presents', 'we present']):
+            para = [stripped]
+            for j in range(i + 1, min(i + 5, len(lines))):
+                s = lines[j].strip()
+                if not s or s.startswith('#'):
+                    break
+                para.append(s)
+            desc = ' '.join(para)
+            if len(desc) > 10:
+                return _truncate_to_sentence(desc, max_length)
+
+    # 3. Try blockquote — take first meaningful one
     for line in lines:
         stripped = line.strip()
         if stripped.startswith('> '):
@@ -242,7 +285,7 @@ def extract_description_from_body(body_text, max_length=200):
             if len(desc) > 10:
                 return _truncate_to_sentence(desc, max_length)
 
-    # Try first non-heading, non-empty paragraph — ensure at least one sentence
+    # 4. Try first non-heading, non-empty paragraph (original fallback)
     para_lines = []
     for line in lines:
         stripped = line.strip()
