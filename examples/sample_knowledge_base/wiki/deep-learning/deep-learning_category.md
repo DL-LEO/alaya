@@ -13,6 +13,6 @@
 - [[Neural-Networks]] — 神经网络是深度学习的基础模型，通过多层非线性变换学习数据的层次化表示。
 - [[Backpropagation]] — 反向传播是训练神经网络的核心算法，通过链式法则计算梯度并逐层更新参数。
 - [[Gradient-Descent]] — 梯度下降是最基础的优化算法，通过沿梯度反方向迭代更新参数以最小化损失函数。
-- [[hyper-transformer算法框架思考]] — 探索超图结构与 Transformer 的融合，提出 hyper-transformer 算法框架。
+
 
 <!-- END-AUTO -->
