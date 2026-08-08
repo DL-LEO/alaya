@@ -8,7 +8,6 @@ created_by: system
 strength: 0.55
 last_activated: 2026-06-02
 activation_count: 0
-half_life: 30
 description: "反向传播是训练神经网络的核心算法，通过链式法则计算梯度并逐层更新参数。"
 ---
 

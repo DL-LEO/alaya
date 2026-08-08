@@ -8,7 +8,6 @@ created_by: system
 strength: 0.65
 last_activated: 2026-06-02
 activation_count: 0
-half_life: 30
 description: "注意力机制允许模型在生成输出时动态关注输入序列中最相关的部分，是现代深度学习中最重要的基础技术之一。"
 ---
 

@@ -1,3 +1,8 @@
 # Alaya · Dependencies
-# All scripts use Python standard library only — no external packages required.
-# Python >= 3.8
+# Core MD/TXT, index, persona, memory and maintenance features use only the
+# Python 3.8+ standard library.
+#
+# Optional PDF script import:
+#   python -m pip install pymupdf
+# The Agent must ask before installing it.  Without PyMuPDF, users can still
+# import MD/TXT or choose the host Agent's LLM-based PDF reading path.

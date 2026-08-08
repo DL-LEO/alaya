@@ -1,1030 +1,396 @@
-# Alaya · Build Index (v2.0)
-# Generates two-layer knowledge graph from wiki/{category}/ subfolders.
-#
-# Layer 1: wiki/index.md — category overview with descriptions
-# Layer 2: wiki/{category}/{category}_category.md — card list with descriptions
-# Layer 3: wiki/{category}/*.md — knowledge cards (leaf nodes)
-#
-# Card descriptions are read from YAML frontmatter. Missing descriptions
-# are auto-extracted from card body (blockquote or first paragraph).
-# Category headers and index entries can be refined via LLM by the Agent.
-#
-# v2.0 changes:
-#   - _category.md renamed to {category}_category.md (distinguishable in Obsidian graph)
-#   - Removed: Concept Network, Card Relations, Core/Peripheral/Dormant tiers
-#   - Added: card description extraction, auto category headers, index descriptions
-#   - Old _category.md files are auto-migrated on first run
-#
-# Usage:
-#   python scripts/build_index.py [wiki_dir] [alaya_dir]          # full rebuild
-#   python scripts/build_index.py --category {cat} [wiki_dir]     # single category
-#   python scripts/build_index.py --incremental [wiki_dir]        # only changed categories
+#!/usr/bin/env python3
+"""Build complete three-tier indexes with safe incremental publication."""
 
-import json, os, re, sys
-from collections import defaultdict
-from datetime import datetime
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import bi_observer
-from lib.yaml_utils import (
-    read_frontmatter, get_field, get_field_float, set_field,
-    inject_metadata, rebuild_content, extract_title, get_tags,
-    get_description, set_description, slugify, get_all_cards,
-    is_category_file, category_file_for, extract_description_from_body,
+from lib.runtime import (  # noqa: E402
+    AlayaError,
+    commit_text_bundle,
+    knowledge_paths,
+    load_effective_config,
+    read_json,
+    resolve_kb_root,
+)
+from lib.index_utils import (  # noqa: E402
+    all_paired_blocks,
+    block,
+    block_status,
+    outside_generated_blocks,
+    paired_block,
+)
+from lib.yaml_utils import (  # noqa: E402
+    category_file_for,
+    extract_description_from_body,
+    extract_title,
+    get_description,
+    get_tags,
+    is_knowledge_card,
+    read_frontmatter,
+    rebuild_content,
+    set_description,
 )
 
-SKIP_FILES = {'index.md', 'log.md'}
+
+BASE = "AUTO (base)"
+REFINED = "AUTO (refined)"
+MANUAL = "MANUAL"
 
 
-def parse_args():
-    args = sys.argv[1:]
-    wiki_dir = 'wiki'
-    alaya_dir = 'alaya'
-    category = None
-    incremental = False
-    classify_card = None
-
-    def _need_val(flag, val):
-        """Guard: a flag value must not look like another flag."""
-        if val is not None and val.startswith('--'):
-            print(f"[build_index] ERROR: {flag} requires a value, got '{val}'", file=sys.stderr)
-            sys.exit(1)
-        return val
-
-    i = 0
-    while i < len(args):
-        if args[i] == '--category' and i + 1 < len(args):
-            category = _need_val('--category', args[i + 1]); i += 2
-        elif args[i] == '--incremental':
-            incremental = True; i += 1
-        elif args[i] == '--classify-card' and i + 1 < len(args):
-            classify_card = _need_val('--classify-card', args[i + 1]); i += 2
-        elif args[i] == '--alaya' and i + 1 < len(args):
-            alaya_dir = _need_val('--alaya', args[i + 1]); i += 2
-        elif args[i] == '--wiki' and i + 1 < len(args):
-            wiki_dir = _need_val('--wiki', args[i + 1]); i += 2
-        elif args[i] == '--full':
-            i += 1
-        elif not args[i].startswith('--'):
-            if wiki_dir == 'wiki':
-                wiki_dir = args[i]
-            elif alaya_dir == 'alaya':
-                alaya_dir = args[i]
-            i += 1
-        else:
-            print(f"[build_index] WARNING: unknown flag '{args[i]}' (ignored)", file=sys.stderr)
-            i += 1
-
-    return wiki_dir, alaya_dir, category, incremental, classify_card
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Build Alaya category and total indexes")
+    parser.add_argument("--kb-root", help="Knowledge-base root override")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--full", action="store_true", help="Scan every category")
+    mode.add_argument("--category", help="Rescan one category and republish the complete total index")
+    mode.add_argument("--mark-description-updated", metavar="CATEGORY")
+    parser.add_argument("--check-only", action="store_true", help="Report without writing")
+    parser.add_argument("--confirm-removals", action="store_true", help="Allow published categories to disappear")
+    return parser.parse_args(argv)
 
 
-def load_config(alaya_dir):
-    config_path = os.path.join(alaya_dir, 'config.json')
-    if os.path.exists(config_path):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-
-def _kcfg(config):
-    """Get knowledge subsystem config (handles flat v1.7 and nested v1.8+)."""
-    if 'knowledge' in config:
-        return config['knowledge']
-    return config
-
-
-def save_config(alaya_dir, config):
-    config_path = os.path.join(alaya_dir, 'config.json')
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-
-
-def load_index_meta(alaya_dir):
-    path = os.path.join(alaya_dir, '.index_metadata.json')
-    if os.path.exists(path):
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {'last_full_build': '', 'categories': {}, 'stale_descriptions': []}
-
-
-def save_index_meta(alaya_dir, meta):
-    path = os.path.join(alaya_dir, '.index_metadata.json')
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+def now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def discover_categories(wiki_dir):
-    """Return list of (category_slug, category_path) from wiki/ subfolders."""
-    categories = []
-    if not os.path.isdir(wiki_dir):
-        return categories
-    for entry in sorted(os.listdir(wiki_dir)):
-        if entry.startswith('.'):
+    root = Path(wiki_dir)
+    return [
+        path.name for path in sorted(root.iterdir(), key=lambda item: item.name.casefold())
+        if path.is_dir() and not path.name.startswith(".") and not path.name.startswith("~$")
+    ] if root.is_dir() else []
+
+
+def semantic_fingerprint(card_rows):
+    payload = [
+        {"path": row["path"], "title": row["title"], "description": row["description"], "tags": row["tags"]}
+        for row in card_rows
+    ]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def semantic_map(card_rows):
+    result = {}
+    for row in card_rows:
+        value = json.dumps(
+            {"title": row["title"], "description": row["description"], "tags": row["tags"]},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        result[row["path"]] = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return result
+
+
+def changed_items(baseline, current):
+    keys = set(baseline or {}) | set(current or {})
+    return sum(1 for key in keys if (baseline or {}).get(key) != (current or {}).get(key))
+
+
+def scan_category(wiki_dir, category, write_descriptions=True):
+    directory = Path(wiki_dir) / category
+    rows = []
+    card_writes = []
+    manifest = []
+    for path in sorted(directory.glob("*.md"), key=lambda item: item.name.casefold()):
+        if not is_knowledge_card(path):
             continue
-        cat_path = os.path.join(wiki_dir, entry)
-        if os.path.isdir(cat_path):
-            # Check if it has at least one .md card (not just category file)
-            has_cards = any(
-                f.endswith('.md') and f not in SKIP_FILES and not is_category_file(f)
-                for f in os.listdir(cat_path)
-            )
-            if has_cards:
-                categories.append((entry, cat_path))
-    return categories
-
-
-def scan_category_cards(cat_path, half_life_default=30):
-    """Scan a category folder, inject missing metadata, extract descriptions.
-
-    Returns list of card dicts with keys: name, created_by, strength, tags,
-    description, modified.
-    """
-    cards = []
-    today = datetime.now().strftime('%Y-%m-%d')
-
-    for fname in sorted(os.listdir(cat_path)):
-        if not fname.endswith('.md') or fname in SKIP_FILES or is_category_file(fname):
-            continue
-
-        fpath = os.path.join(cat_path, fname)
-        result = read_frontmatter(fpath)
-        card_name = fname[:-3]
-
-        if result is None:
-            # No YAML at all — wrap with full frontmatter
-            with open(fpath, 'r', encoding='utf-8') as f:
-                body = f.read()
-            desc = extract_description_from_body(body)
-            desc_line = f'\ndescription: "{desc}"' if desc else ''
-            new_content = (
-                f'---\nseed_type: REFINED\ncreated_by: system\n'
-                f'strength: 0.5\nlast_activated: {today}\n'
-                f'activation_count: 0\nhalf_life: {half_life_default}{desc_line}\n---\n\n{body}'
-            )
-            with open(fpath, 'w', encoding='utf-8') as f:
-                f.write(new_content)
-            cards.append({
-                'name': card_name,
-                'created_by': 'system',
-                'strength': 0.5,
-                'tags': [],
-                'description': desc or '',
-                'modified': True,
-            })
-            continue
-
+        stat = path.stat()
+        manifest.append([path.name, stat.st_size, stat.st_mtime_ns])
+        result = read_frontmatter(path)
+        if not result:
+            raise AlayaError("Card has invalid frontmatter: %s" % path)
         content, yaml_str, dash = result
-
-        # Inject missing Alaya metadata
-        needs_inject = (
-            'seed_type:' not in yaml_str or
-            'strength:' not in yaml_str or
-            'last_activated:' not in yaml_str
-        )
-        if needs_inject:
-            new_yaml = inject_metadata(yaml_str, {'last_activated': today})
-            new_content = rebuild_content(new_yaml, dash, content)
-            with open(fpath, 'w', encoding='utf-8') as f:
-                f.write(new_content)
-            yaml_str = new_yaml
-            content = new_content
-
-        # Get or generate description
-        desc = get_description(yaml_str)
-        desc_was_generated = False
-        if not desc:
-            body_text = content[dash + 3:].lstrip('\n')
-            desc = extract_description_from_body(body_text)
-            if desc:
-                new_yaml = set_description(yaml_str, desc)
-                new_content = rebuild_content(new_yaml, dash, content)
-                with open(fpath, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
-                yaml_str = new_yaml
-                desc_was_generated = True
-
-        cards.append({
-            'name': card_name,
-            'created_by': get_field(yaml_str, 'created_by') or '',
-            'strength': get_field_float(yaml_str, 'strength') or 0.5,
-            'tags': get_tags(yaml_str),
-            'description': desc or '',
-            'modified': needs_inject or desc_was_generated,
+        body = content[dash + 3:].lstrip("\r\n")
+        description = get_description(yaml_str)
+        if not description:
+            description = extract_description_from_body(body) or ("Knowledge card: %s" % path.stem)
+            if write_descriptions:
+                new_yaml = set_description(yaml_str, description)
+                card_writes.append((path, rebuild_content(new_yaml, dash, content)))
+        rows.append({
+            "path": path.name,
+            "name": path.stem,
+            "title": extract_title(yaml_str, path.stem),
+            "description": description,
+            "tags": get_tags(yaml_str),
         })
-
-    return cards
-
-
-def _distill_common_themes(descriptions, max_themes=3):
-    """Extract common theme words from card descriptions via simple token frequency.
-
-    Tokenizes Chinese text by splitting on common delimiters, counts multi-char
-    tokens, and returns top-N as a theme list. Returns [] if descriptions too sparse.
-    """
-    import re as _re
-    if not descriptions:
-        return []
-    # Chinese-unfriendly stop words and single chars to skip
-    STOP = {'的', '了', '是', '和', '与', '在', '中', '及', '等', '或',
-            '通过', '进行', '提出', '使用', '一种', '可以', '基于', '实现',
-            'the', 'a', 'an', 'of', 'for', 'in', 'to', 'and', 'with', 'is', 'on',
-            'this', 'that', 'or', 'as', 'by', 'from'}
-    all_tokens = []
-    for desc in descriptions:
-        # Split on Chinese/English punctuation and spaces
-        tokens = _re.split(r'[，。、；：\s,.;:()（）\[\]\"\']+', desc.lower())
-        # Keep multi-char tokens that are not stop words
-        meaningful = [t for t in tokens if len(t) >= 2 and t not in STOP]
-        all_tokens.extend(meaningful)
-
-    if not all_tokens:
-        return []
-
-    freq = {}
-    for t in all_tokens:
-        freq[t] = freq.get(t, 0) + 1
-    sorted_tokens = sorted(freq, key=freq.get, reverse=True)
-    return sorted_tokens[:max_themes]
+    manifest_hash = hashlib.sha256(json.dumps(manifest, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return rows, card_writes, manifest_hash
 
 
-def generate_category_header(cards):
-    """Generate a 100-200 char Chinese category overview from its cards.
+def threshold_for(size, config):
+    thresholds = config.get("knowledge", {}).get("description_change_thresholds", [])
+    for item in thresholds:
+        maximum = item.get("max_cards")
+        if maximum is None or size <= int(maximum):
+            return int(item.get("changes", 1))
+    return 10
 
-    Structure (3 segments):
-      1. Domain positioning — synthesized from tag statistics
-      2. Semantic overview — distilled themes from all card descriptions
-      3. Reading guidance — entry point suggestion
 
-    Cards are sorted alphabetically (not by strength) to ensure stable,
-    unbiased headers regardless of recent card activity.
-    """
-    # Stable sort by description presence then alphabetically — NOT by strength
-    cards_sorted = sorted(cards, key=lambda c: (
-        0 if c.get('description') else 1,
-        c['name'].lower()
-    ))
-    total = len(cards_sorted)
+def generate_base_description(category, rows):
+    tags = []
+    for row in rows:
+        for tag in row["tags"]:
+            if tag not in tags:
+                tags.append(tag)
+    topic = "、".join(tags[:5]) if tags else "本类别主题"
+    return "本类别收录 %d 张知识卡片，主要覆盖 %s。可从卡片描述选择与当前问题最相关的内容继续阅读。" % (len(rows), topic)
 
-    # --- Segment 1: Domain positioning ---
-    tag_counts = defaultdict(int)
-    for c in cards_sorted:
-        for t in c.get('tags', []):
-            tag_counts[t.lower()] += 1
 
-    top_tags = sorted(tag_counts, key=tag_counts.get, reverse=True)[:6]
-    if top_tags:
-        primary = top_tags[0] if top_tags[0] else '多个领域'
-        if len(top_tags) >= 3:
-            tag_str = f"{'、'.join(top_tags[:3])}"
-        else:
-            tag_str = '、'.join(top_tags)
-        if total <= 3:
-            header = f"本类别覆盖 {tag_str} 方向，收录 {total} 张卡片。"
-        else:
-            header = f"本类别覆盖 {tag_str} 等方向，共收录 {total} 张卡片。"
+def category_content(category, rows, existing="", extra_manual=None):
+    for name in (BASE, REFINED, MANUAL):
+        if block_status(existing, name) == "unpaired":
+            raise AlayaError("Category page contains an unpaired %s block: %s" % (name, category))
+    refined = paired_block(existing, REFINED)
+    manuals = all_paired_blocks(existing, MANUAL)
+    outside = outside_generated_blocks(existing)
+    if outside and outside not in manuals:
+        manuals.append(outside)
+    for value in extra_manual or []:
+        if value and value not in manuals:
+            manuals.append(value)
+    lines = [generate_base_description(category, rows), "", "## Cards"]
+    for row in rows:
+        lines.append("- [[%s]] — %s" % (row["name"], row["description"]))
+    sections = ["# %s" % category, ""]
+    if refined:
+        sections.extend([block(REFINED, refined), ""])
+    sections.append(block(BASE, "\n".join(lines)))
+    for manual in manuals:
+        sections.extend(["", block(MANUAL, manual)])
+    return "\n".join(sections).rstrip() + "\n"
+
+
+def category_description(content, category):
+    refined = paired_block(content, REFINED)
+    if refined:
+        return " ".join(line.strip() for line in refined.splitlines() if line.strip())
+    base = paired_block(content, BASE)
+    if base:
+        before_cards = base.split("## Cards", 1)[0]
+        return " ".join(line.strip() for line in before_cards.splitlines() if line.strip())
+    return "Category %s" % category
+
+
+def generate_total_index(wiki_dir, categories, pending_category_content):
+    entries = ["## Categories", ""]
+    missing = []
+    for category in categories:
+        path = Path(wiki_dir) / category / category_file_for(category)
+        content = pending_category_content.get(category)
+        if content is None:
+            try:
+                content = path.read_text(encoding="utf-8-sig")
+            except OSError:
+                missing.append(str(path))
+                continue
+        description = category_description(content, category)
+        entries.extend([
+            "- [[%s/%s|%s]]" % (category, category_file_for(category)[:-3], category),
+            "  %s" % description,
+            "",
+        ])
+    if missing:
+        raise AlayaError("Cannot publish total index; category indexes are missing: %s" % ", ".join(missing))
+    body = block(BASE, "\n".join(entries).rstrip())
+    return "# Knowledge Index\n\n%s\n" % body
+
+
+def load_metadata(paths):
+    value = read_json(paths["alaya"] / ".index_metadata.json", default={}) or {}
+    if not isinstance(value, dict):
+        raise AlayaError(".index_metadata.json must contain an object")
+    value["_legacy_upgrade"] = (
+        value.get("version") != "3.0.0" or not isinstance(value.get("published_categories"), list)
+    )
+    value["version"] = "3.0.0"
+    value.setdefault("categories", {})
+    value.setdefault("published_categories", [])
+    return value
+
+
+def update_description_state(meta, category, rows, manifest_hash, config):
+    state = dict(meta.get("categories", {}).get(category, {}))
+    current = semantic_map(rows)
+    baseline = state.get("description_baseline")
+    if baseline is None:
+        pending = max(1, len(rows)) if category not in meta.get("published_categories", []) else 0
+        baseline = current if pending == 0 else {}
     else:
-        header = f"本类别收录 {total} 张知识卡片，涵盖多个领域。"
-
-    # --- Segment 2: Semantic overview — distill themes from ALL descriptions ---
-    all_descs = [c['description'].strip() for c in cards_sorted
-                 if c.get('description', '').strip()]
-    themes = _distill_common_themes(all_descs)
-
-    if themes:
-        if len(themes) == 1:
-            header += f" 核心议题围绕 {themes[0]} 展开。"
-        elif len(themes) == 2:
-            header += f" 核心议题围绕 {themes[0]} 与 {themes[1]} 展开。"
-        else:
-            header += f" 核心议题围绕 {themes[0]}、{themes[1]} 及 {themes[2]} 等展开。"
-    elif all_descs:
-        # Descriptions exist but no themes extracted — use first as anchor
-        first = all_descs[0]
-        if len(first) > 60:
-            first = first[:60] + '...'
-        header += f" 代表性主题如：{first}"
-    else:
-        header += " 各卡片覆盖该领域的核心概念与方法。"
-
-    # --- Segment 3: Reading guidance ---
-    first_card = cards_sorted[0]['name'] if cards_sorted else ''
-    if total <= 2:
-        header += " 可通过卡片正文深入了解具体内容。"
-    elif first_card:
-        header += f" 建议从 {first_card} 开始阅读以建立整体认知。"
-
-    return header
+        pending = changed_items(baseline, current)
+    if pending and not state.get("pending_since"):
+        state["pending_since"] = now_iso()
+    if not pending:
+        state.pop("pending_since", None)
+    state.update({
+        "card_count": len(rows),
+        "manifest_fingerprint": manifest_hash,
+        "semantic_fingerprint": semantic_fingerprint(rows),
+        "current_cards": current,
+        "pending_changes": pending,
+        "description_threshold": threshold_for(max(1, len(baseline)), config),
+        "last_indexed_at": now_iso(),
+    })
+    meta.setdefault("categories", {})[category] = state
 
 
-def compute_category_relationships(category_data):
-    """Compute cross-category relationships based on description text cosine similarity.
-
-    For each category, aggregates all card descriptions into a text corpus,
-    tokenizes and builds frequency vectors, then computes pairwise cosine
-    similarity. Replaces the old tag-Jaccard approach which was unreliable
-    due to inconsistent tagging.
-
-    Returns dict: {cat_slug: [(related_cat, cosine_score, common_terms), ...]}
-    Threshold: cosine >= 0.15
-    Each category keeps at most its top 3 related categories.
-    """
-    from collections import Counter
-    import math
-    import re as _re
-
-    STOP = {'的', '了', '是', '和', '与', '在', '中', '及', '等', '或',
-            '通过', '进行', '提出', '使用', '一种', '可以', '基于', '实现',
-            'the', 'a', 'an', 'of', 'for', 'in', 'to', 'and', 'with', 'is', 'on',
-            'this', 'that', 'or', 'as', 'by', 'from', 'we', '本文', '我们',
-            '方法', '问题', '模型', '数据', '任务', '不同', '提出', '一个',
-            '能够', '利用', '学习', '采用', '包括', '分析', '研究', '进行'}
-
-    def tokenize(text):
-        tokens = _re.split(r'[，。、；：\s,.;:()（）\[\]\"\'，。、—…·！？]+', text.lower())
-        return [t for t in tokens if len(t) >= 2 and t not in STOP]
-
-    def cosine_sim(vec_a, vec_b):
-        intersection = set(vec_a.keys()) & set(vec_b.keys())
-        if not intersection:
-            return 0, []
-        dot = sum(vec_a[w] * vec_b[w] for w in intersection)
-        norm_a = math.sqrt(sum(v * v for v in vec_a.values()))
-        norm_b = math.sqrt(sum(v * v for v in vec_b.values()))
-        if norm_a * norm_b == 0:
-            return 0, []
-        score = dot / (norm_a * norm_b)
-        # Extract common terms sorted by contribution
-        common = sorted(intersection, key=lambda w: vec_a[w] * vec_b[w], reverse=True)[:5]
-        return round(score, 3), common
-
-    # Build per-category description corpus
-    # Includes: card descriptions, card names (cross-domain signals),
-    # tags (curated keywords, strongest overlap signal), category name.
-    cat_corpora = {}
-    for cat_slug, cards in category_data.items():
-        texts = []
-        # Include category name as anchor signal
-        texts.append(cat_slug.replace('-', ' ').replace('_', ' '))
-        for c in cards:
-            desc = c.get('description', '')
-            if desc and len(desc) > 10:
-                texts.append(desc)
-            # Card name carries cross-domain signals
-            name = c['name'].replace('-', ' ').replace('_', ' ')
-            texts.append(name)
-            # Tags are curated keywords — strong overlap signal between domains
-            for tag in c.get('tags', []):
-                texts.append(tag.lower().replace('-', ' ').replace('_', ' '))
-        cat_corpora[cat_slug] = texts
-
-    # Tokenize and build frequency vectors
-    cat_vectors = {}
-    for slug, texts in cat_corpora.items():
-        tokens = []
-        for t in texts:
-            tokens.extend(tokenize(t))
-        cat_vectors[slug] = Counter(tokens)
-
-    # Pairwise cosine similarity
-    relationships = {slug: [] for slug in category_data}
-    cats = sorted(category_data.keys())
-
-    for i, cat_a in enumerate(cats):
-        vec_a = cat_vectors.get(cat_a, Counter())
-        if not vec_a:
+def due_categories(meta, config):
+    due = []
+    max_wait = int(config.get("maintenance", {}).get("description_refresh_max_wait_days", 3))
+    now = datetime.now(timezone.utc)
+    for category, state in meta.get("categories", {}).items():
+        pending = int(state.get("pending_changes", 0))
+        if pending <= 0:
             continue
-        for cat_b in cats[i + 1:]:
-            vec_b = cat_vectors.get(cat_b, Counter())
-            if not vec_b:
-                continue
-            score, common = cosine_sim(vec_a, vec_b)
-            if score >= 0.15:
-                relationships[cat_a].append((cat_b, score, common))
-                relationships[cat_b].append((cat_a, score, common))
-
-    # Sort and limit to top 3 per category
-    for slug in relationships:
-        relationships[slug].sort(key=lambda x: x[1], reverse=True)
-        relationships[slug] = relationships[slug][:3]
-
-    return relationships
+        threshold = int(state.get("description_threshold", 1))
+        started = state.get("pending_since")
+        age_due = False
+        if started:
+            try:
+                parsed = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                age_due = (now - parsed).days >= max_wait
+            except ValueError:
+                pass
+        if pending >= threshold or age_due:
+            due.append(category)
+    return sorted(due, key=str.casefold)
 
 
-def generate_index_entry(cards, cat_slug, related_categories=None, category_header=None):
-    """Generate a scene-oriented index.md entry for a category.
-
-    Uses the category header content as the primary description (much richer
-    than bare card names), with cross-category references appended when
-    relationships exist.
-
-    Args:
-        cards: List of card dicts for this category.
-        cat_slug: Category slug name.
-        related_categories: List of (related_slug, score, common_terms) from
-            compute_category_relationships(), or None/empty.
-        category_header: The category header text (from generate_category_header),
-            used as the primary description content.
-    """
-    total = len(cards)
-
-    # Use category header as the primary description source
-    if category_header and len(category_header) > 20:
-        entry = category_header
-        # Sentence-boundary truncation at 400 chars (refined content is 200-400 chars)
-        if len(entry) > 400:
-            parts = re.split(r'(?<=[。.])', entry)
-            result = ''
-            for p in parts:
-                if len(result) + len(p) <= 400:
-                    result += p
-                else:
-                    break
-            entry = result if result else entry[:397] + '...'
-    else:
-        # Fallback: original logic using card names
-        card_names = sorted(c['name'] for c in cards)
-        if total <= 2:
-            first = card_names[0] if card_names else ''
-            entry = f"当需要深入了解 {first} 及其相关概念时，可通过此类别查阅。"
-        else:
-            scope = '、'.join(card_names[:2])
-            if len(card_names) > 2:
-                scope += '等'
-            entry = f"当需要理解 {scope} 核心概念与方法时，可查阅此类别。"
-    # Only append card count if the header doesn't already include it
-    has_count = bool(re.search(r'\d+\s*张卡片?', entry)) or '共收录' in entry
-    if not has_count:
-        entry += f" 共收录 {total} 张卡片。"
-
-    # Append cross-category references
-    if related_categories:
-        refs = []
-        for rcat, _score, _tags in related_categories[:2]:
-            refs.append(f"[[{rcat}/{category_file_for(rcat).replace('.md','')}|{rcat}]]")
-        if refs:
-            entry += f" 关联类别：{'、'.join(refs)}。"
-
-    return entry
+def merge_legacy_manual(category_dir, category):
+    old = category_dir / "_category.md"
+    new = category_dir / category_file_for(category)
+    if not old.is_file() or old.resolve() == new.resolve():
+        return [], None
+    old_content = old.read_text(encoding="utf-8-sig")
+    for name in (BASE, REFINED, MANUAL):
+        if block_status(old_content, name) == "unpaired":
+            raise AlayaError("Legacy category page contains an unpaired %s block: %s" % (name, old))
+    manuals = all_paired_blocks(old_content, MANUAL)
+    outside = outside_generated_blocks(old_content)
+    if outside:
+        raise AlayaError("Legacy category page has unmarked content; migration stopped without changing files: %s" % old)
+    return manuals, old
 
 
-def generate_category_md(cat_slug, cards, relationships=None):
-    """Generate {cat}_category.md content with <!-- AUTO (base) --> markers.
-
-    Args:
-        cat_slug: Category slug.
-        cards: List of card dicts.
-        relationships: Optional dict from compute_category_relationships().
-            If provided and this category has entries, a ## Related Categories
-            section is inserted before ## Cards with similarity scores.
-    """
-    cards_sorted = sorted(cards, key=lambda c: c['strength'], reverse=True)
-    header = generate_category_header(cards_sorted)
-
-    lines = [
-        f'# {cat_slug}\n',
-        f'\n',
-        f'<!-- AUTO (base) -->\n',
-        f'{header}\n',
-    ]
-
-    # --- Related Categories (cross-category links, from description cosine) ---
-    related = (relationships or {}).get(cat_slug, [])
-    if related:
-        lines.append(f'\n')
-        lines.append(f'## Related Categories\n')
-        for rcat, score, terms in related:
-            term_hint = '、'.join(terms) if terms else ''
-            cat_file = category_file_for(rcat).replace('.md', '')
-            lines.append(f'- [[{rcat}/{cat_file}|{rcat}]] — 共享概念：{term_hint} [相似度: {score}]\n')
-        lines.append(f'\n')
-
-    lines.append(f'## Cards\n')
-
-    for c in cards_sorted:
-        desc = c.get('description', '')
-        if desc:
-            lines.append(f'- [[{c["name"]}]] — {desc}\n')
-        else:
-            lines.append(f'- [[{c["name"]}]]\n')
-
-    lines.append('\n<!-- AUTO (base) -->\n')
-    return ''.join(lines)
-
-
-def extract_index_description(category_header):
-    """Extract the index.md category entry from the category header.
-
-    Uses the full header (up to 300 chars) since the enhanced header is
-    already a structured multi-sentence overview. Only truncates if excessive.
-    """
-    if not category_header:
-        return ''
-    # Full header usually fits within 300 chars — use as-is
-    if len(category_header) <= 300:
-        return category_header
-    # Otherwise take up to sentence boundaries within 300 chars
-    parts = re.split(r'(?<=[。.])', category_header)
-    result = ''
-    for p in parts:
-        if len(result) + len(p) <= 300:
-            result += p
-        else:
-            break
-    return result if result else category_header[:300]
-
-
-def read_refined_block(filepath):
-    """Extract <!-- AUTO (refined) --> block content from a file.
-
-    Returns the stripped text content if found, None otherwise.
-    """
-    if not os.path.exists(filepath):
-        return None
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-    match = re.search(
-        r'<!--\s*AUTO\s*\(refined\)\s*-->([\s\S]*?)<!--\s*AUTO\s*\(refined\)\s*-->',
-        content
-    )
-    if match:
-        return match.group(1).strip()
-    return None
-
-
-def generate_index_md(category_data, relationships=None, refined_descriptions=None):
-    """Generate wiki/index.md content in v2.0 format with <!-- AUTO (base) --> markers.
-
-    Uses generate_index_entry() with category headers for richer descriptions,
-    and cross-category references when relationships exist.
-    """
-    rel = relationships or {}
-
-    lines = [
-        f'# Knowledge Index\n',
-        f'\n',
-        f'<!-- AUTO (base) -->\n',
-        f'## Categories\n',
-        f'\n',
-    ]
-
-    for cat in sorted(category_data.keys()):
-        cards = category_data[cat]
-        cat_file = category_file_for(cat).replace('.md', '')
-        # Use refined content if available, fall back to statistical header
-        if refined_descriptions and cat in refined_descriptions:
-            cat_header = refined_descriptions[cat]
-        else:
-            cat_header = generate_category_header(cards)
-        index_desc = generate_index_entry(cards, cat, rel.get(cat, []), category_header=cat_header)
-        lines.append(f'- [[{cat}/{cat_file}|{cat}]]\n')
-        if index_desc:
-            lines.append(f'  {index_desc}\n')
-        else:
-            lines.append(f'  _{len(cards)} 张卡片_\n')
-        lines.append('\n')
-
-    lines.append('<!-- AUTO (base) -->\n')
-    return ''.join(lines)
-
-
-def write_with_auto_preserve(filepath, new_auto_content, skip_refined=False):
-    """Write file, preserving <!-- AUTO (refined) --> and <!-- MANUAL --> blocks.
-
-    Replaces only the <!-- AUTO (base) --> block (or legacy <!-- AUTO --> block).
-    LLM-generated refined descriptions in <!-- AUTO (refined) --> are preserved
-    across build_index runs.
-
-    The new_auto_content CAN include or omit the <!-- AUTO (base) --> markers:
-    - If markers present: content between them is extracted as the base body
-    - If markers absent: entire content is treated as the base body
-
-    When skip_refined=True (used for index.md), the <!-- AUTO (refined) --> block
-    is NOT written to the output — only the base block. This avoids duplication
-    when the base block already incorporates refined content from category files.
-
-    Each MANUAL block is matched to its preceding heading/context in the old file.
-    If the same context exists in the new content, the block is placed right after it.
-    Otherwise, the block is appended at the end (preserving backward compatibility).
-    """
-    manual_blocks = []
-    refined_content = None
-    preamble = ''
-
-    # Determine preamble from existing file
-    if os.path.exists(filepath):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            existing = f.read()
-
-        # Extract preamble (everything before first AUTO marker)
-        auto_match = re.search(r'<!--\s*AUTO', existing)
-        if auto_match:
-            preamble = existing[:auto_match.start()]
-        else:
-            preamble = existing.rstrip() + '\n\n'
-
-        # Extract refined block (LLM-generated, preserved as-is)
-        refined_match = re.search(
-            r'<!--\s*AUTO\s*\(refined\)\s*-->([\s\S]*?)<!--\s*AUTO\s*\(refined\)\s*-->',
-            existing
+def mark_description(paths, config, category, check_only=False):
+    meta = load_metadata(paths)
+    rows, _writes, manifest = scan_category(paths["wiki"], category, write_descriptions=False)
+    state = meta.setdefault("categories", {}).setdefault(category, {})
+    state["description_baseline"] = semantic_map(rows)
+    state["current_cards"] = semantic_map(rows)
+    state["pending_changes"] = 0
+    state.pop("pending_since", None)
+    state["description_updated_at"] = now_iso()
+    state["manifest_fingerprint"] = manifest
+    meta["stale_descriptions"] = due_categories(meta, config)
+    meta.pop("_legacy_upgrade", None)
+    if not check_only:
+        commit_text_bundle(
+            paths["alaya"], "description-baseline-%s" % category,
+            [(paths["alaya"] / ".index_metadata.json", json.dumps(meta, ensure_ascii=False, indent=2) + "\n")],
         )
-        if refined_match:
-            refined_content = refined_match.group(1).strip()
-
-        # Extract MANUAL blocks with position context
-        i = 0
-        while True:
-            start = existing.find('<!-- MANUAL -->', i)
-            if start < 0:
-                break
-            end = existing.find('<!-- END-MANUAL -->', start)
-            if end < 0:
-                break
-
-            # Capture context: the nearest heading before this MANUAL block
-            before = existing[:start]
-            heading_match = None
-            for m in re.finditer(r'^(#{1,4})\s+(.+)$', before, re.MULTILINE):
-                heading_match = m  # last heading wins (closest to the block)
-            if heading_match:
-                context_key = heading_match.group(0).strip()
-            else:
-                # Fallback: use up to 80 chars of preceding text
-                context_key = before[-80:].strip().split('\n')[-1] if before.strip() else ''
-
-            content = existing[start + len('<!-- MANUAL -->'):end]
-            manual_blocks.append((context_key, content))
-            i = end + len('<!-- END-MANUAL -->')
-    else:
-        # New file: extract heading from new content as preamble
-        first_newline = new_auto_content.find('\n')
-        if first_newline >= 0:
-            preamble = new_auto_content[:first_newline + 1]
-        else:
-            preamble = new_auto_content + '\n\n'
-
-    # Extract base body from new_auto_content (strip markers if present)
-    base_match = re.search(
-        r'<!--\s*AUTO\s*\(base\)\s*-->([\s\S]*?)<!--\s*AUTO\s*\(base\)\s*-->',
-        new_auto_content
-    )
-    if base_match:
-        base_body = base_match.group(1).strip()
-    else:
-        # No markers — entire content is the base body
-        base_body = new_auto_content.strip()
-
-    # Build output: preamble + [refined] + base + manual
-    result = preamble.rstrip() + '\n\n'
-
-    # For index.md, skip the refined block to avoid duplication with base
-    if not skip_refined and refined_content:
-        result += '<!-- AUTO (refined) -->\n'
-        result += refined_content + '\n'
-        result += '<!-- AUTO (refined) -->\n\n'
-
-    result += '<!-- AUTO (base) -->\n'
-    result += base_body + '\n'
-    result += '<!-- AUTO (base) -->\n\n'
-
-    # Insert MANUAL blocks into result at context-matched positions
-    for context_key, block_content in manual_blocks:
-        block_marker = '\n<!-- MANUAL -->' + block_content + '<!-- END-MANUAL -->\n'
-        if context_key and context_key in result:
-            # Find the line end after the matching context heading
-            insert_pos = result.find(context_key) + len(context_key)
-            line_end = result.find('\n', insert_pos)
-            if line_end < 0:
-                line_end = len(result)
-            # Insert right after the heading line
-            result = result[:line_end + 1] + block_marker + result[line_end + 1:]
-        else:
-            # Fallback: append at end (backward compatible)
-            result += block_marker
-
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(result)
+    print("Description baseline updated: %s" % category)
 
 
-def migrate_old_category_file(cat_path, cat_slug):
-    """Migrate old _category.md to {cat}_category.md.
-
-    Preserves MANUAL blocks from old file. Returns True if migration occurred.
-    """
-    old_path = os.path.join(cat_path, '_category.md')
-    new_path = os.path.join(cat_path, category_file_for(cat_slug))
-
-    if not os.path.exists(old_path):
-        return False
-
-    # If new file already exists, just delete old
-    if os.path.exists(new_path):
-        os.remove(old_path)
-        print(f'  Migrated (removed old): {cat_slug}/_category.md')
-        return True
-
-    # Extract MANUAL blocks from old file
-    manual_blocks = []
-    with open(old_path, 'r', encoding='utf-8') as f:
-        old_content = f.read()
-    i = 0
-    while True:
-        start = old_content.find('<!-- MANUAL -->', i)
-        if start < 0:
-            break
-        end = old_content.find('<!-- END-MANUAL -->', start)
-        if end < 0:
-            break
-        manual_blocks.append(old_content[start + len('<!-- MANUAL -->'):end])
-        i = end + len('<!-- END-MANUAL -->')
-
-    # Move old file to new filename (content will be regenerated on next build)
-    os.rename(old_path, new_path)
-    print(f'  Migrated: {cat_slug}/_category.md -> {cat_slug}/{category_file_for(cat_slug)}')
-    return True
-
-
-def classify_card_to_category(card_tags, existing_categories):
-    """Try to classify a card into an existing category based on tag overlap.
-
-    Returns (matched_category | None, candidates | None).
-    If exactly one category matches, returns (cat, None).
-    If multiple match, returns (None, [cat1, cat2, ...]).
-    If none match, returns (None, None).
-    """
-    if not existing_categories:
-        return (None, None)
-
-    tag_set = {t.lower().replace(' ', '-') for t in card_tags}
-    if not tag_set:
-        return (None, None)
-
-    matches = []
-    for cat_slug, cat_tags in existing_categories.items():
-        cat_tag_set = {t.lower().replace(' ', '-') for t in cat_tags}
-        overlap = tag_set & cat_tag_set
-        if overlap:
-            matches.append((cat_slug, len(overlap)))
-
-    matches.sort(key=lambda x: x[1], reverse=True)
-
-    if not matches:
-        return (None, None)
-    elif len(matches) == 1:
-        return (matches[0][0], None)
-    else:
-        # Multiple matches: if one is clearly better (2x overlap), use it
-        if matches[0][1] >= matches[1][1] * 2:
-            return (matches[0][0], None)
-        return (None, [m[0] for m in matches])
-
-
-def main():
-    wiki_dir, alaya_dir, target_category, incremental, classify_card = parse_args()
-    config = load_config(alaya_dir)
-    index_meta = load_index_meta(alaya_dir)
-    half_life = _kcfg(config).get('half_life_default', 30)
-    today = datetime.now().strftime('%Y-%m-%d')
-
-    # --classify-card mode: output classification suggestion as JSON
-    if classify_card:
-        card_tags = []
-        card_name = classify_card
-        card_path = os.path.join(wiki_dir, classify_card) if os.path.exists(os.path.join(wiki_dir, classify_card)) else None
-        if card_path is None:
-            # Try to find the card
-            for entry in os.listdir(wiki_dir):
-                test_path = os.path.join(wiki_dir, entry, classify_card)
-                if os.path.exists(test_path):
-                    card_path = test_path
-                    break
-                test_path = os.path.join(wiki_dir, entry, classify_card + '.md')
-                if os.path.exists(test_path):
-                    card_path = test_path
-                    card_name = classify_card + '.md'
-                    break
-
-        if card_path and os.path.exists(card_path):
-            result = read_frontmatter(card_path)
-            if result:
-                _, yaml_str, _ = result
-                card_tags = get_tags(yaml_str)
-
-        # Build existing category tag profiles
-        categories = discover_categories(wiki_dir)
-        cat_tag_profiles = {}
-        for slug, cat_path in categories:
-            cards = scan_category_cards(cat_path, half_life)
-            all_tags = set()
-            for c in cards:
-                for t in c.get('tags', []):
-                    all_tags.add(t)
-            cat_tag_profiles[slug] = sorted(all_tags)
-
-        matched, candidates = classify_card_to_category(card_tags, cat_tag_profiles)
-        result = {
-            'card': card_name.replace('.md', ''),
-            'tags': card_tags,
-            'matched_category': matched,
-            'candidates': candidates,
-            'existing_categories': list(cat_tag_profiles.keys()),
+def build(paths, config, category=None, check_only=False, confirm_removals=False):
+    categories = discover_categories(paths["wiki"])
+    if category and category not in categories:
+        raise AlayaError("Category directory does not exist: %s" % category)
+    meta = load_metadata(paths)
+    if meta.pop("_legacy_upgrade", False):
+        # Existing published libraries start with a truthful baseline instead of
+        # receiving one false "every description is stale" alert on upgrade.
+        old_index = paths["wiki"] / "index.md"
+        old_published = set()
+        if old_index.is_file():
+            old_content = old_index.read_text(encoding="utf-8-sig")
+            old_published = set(re.findall(r"^- \[\[([^/]+)/", paired_block(old_content, BASE), re.MULTILINE))
+        meta["published_categories"] = sorted(old_published or set(categories), key=str.casefold)
+        meta["categories"] = {
+            key: value for key, value in meta.get("categories", {}).items()
+            if key in categories
         }
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+    published = set(meta.get("published_categories", []))
+    removed = sorted(published - set(categories), key=str.casefold)
+    if removed and not confirm_removals:
+        raise AlayaError("Category removal requires --confirm-removals: %s" % ", ".join(removed))
+
+    targets = categories if category is None else [category]
+    writes = []
+    pending_content = {}
+    legacy_backups = []
+    for current in targets:
+        rows, card_writes, manifest = scan_category(paths["wiki"], current, write_descriptions=True)
+        writes.extend(card_writes)
+        category_dir = paths["wiki"] / current
+        category_path = category_dir / category_file_for(current)
+        existing = category_path.read_text(encoding="utf-8-sig") if category_path.is_file() else ""
+        legacy_manual, legacy_path = merge_legacy_manual(category_dir, current)
+        content = category_content(current, rows, existing, legacy_manual)
+        pending_content[current] = content
+        writes.append((category_path, content))
+        if legacy_path:
+            backup = legacy_path.with_suffix(legacy_path.suffix + ".bak")
+            counter = 1
+            while backup.exists():
+                backup = legacy_path.with_suffix(legacy_path.suffix + ".bak.%d" % counter)
+                counter += 1
+            legacy_backups.append((legacy_path, backup))
+        update_description_state(meta, current, rows, manifest, config)
+
+    total = generate_total_index(paths["wiki"], categories, pending_content)
+    # Validate the generated category set before it can replace the old index.
+    generated = set(re.findall(r"^- \[\[([^/]+)/", paired_block(total, BASE), re.MULTILINE))
+    if generated != set(categories):
+        raise AlayaError("Generated total-index categories do not match disk categories")
+    writes.append((paths["wiki"] / "index.md", total))
+    meta["published_categories"] = categories
+    meta["last_build"] = now_iso()
+    meta["stale_descriptions"] = due_categories(meta, config)
+    writes.append((paths["alaya"] / ".index_metadata.json", json.dumps(meta, ensure_ascii=False, indent=2) + "\n"))
+
+    print("Categories on disk: %d" % len(categories))
+    print("Categories in generated index: %d" % len(generated))
+    print("Categories rescanned: %s" % (", ".join(targets) if targets else "none"))
+    print("Description refresh due: %s" % (", ".join(meta["stale_descriptions"]) or "none"))
+    if check_only:
+        print("Check only: no files were changed.")
         return
 
-    # Normal build flow
-    categories = discover_categories(wiki_dir)
+    commit_text_bundle(paths["alaya"], "build-index-%s" % datetime.now().strftime("%Y%m%d%H%M%S"), writes)
+    for source, backup in legacy_backups:
+        os.replace(str(source), str(backup))
+    print("Index publication complete.")
 
-    if not categories:
-        print('No category subfolders found in wiki/')
-        print('  Create wiki/{category-name}/ and add .md cards.')
-        return
 
-    # Determine which categories to rebuild
-    if target_category:
-        cat_dirs = {slug: path for slug, path in categories if slug == target_category}
-        if not cat_dirs:
-            print(f'Category not found: {target_category}')
-            print(f'  Available: {", ".join(s for s, _ in categories)}')
-            return
-        cats_to_build = [(target_category, cat_dirs[target_category])]
-    elif incremental:
-        cats_to_build = []
-        for slug, cat_path in categories:
-            cat_meta = index_meta.get('categories', {}).get(slug, {})
-            last_build = cat_meta.get('last_build', '')
-            if not last_build:
-                cats_to_build.append((slug, cat_path))
-                continue
-            # Check if any card is newer than last_build
-            needs_rebuild = False
-            for fname in os.listdir(cat_path):
-                if not fname.endswith('.md') or fname in SKIP_FILES or is_category_file(fname):
-                    continue
-                fpath = os.path.join(cat_path, fname)
-                mtime = datetime.fromtimestamp(os.path.getmtime(fpath)).strftime('%Y-%m-%d')
-                if mtime > last_build:
-                    needs_rebuild = True
-                    break
-            # Also check if category file itself is newer
-            cat_file = os.path.join(cat_path, category_file_for(slug))
-            if os.path.exists(cat_file):
-                cat_mtime = datetime.fromtimestamp(os.path.getmtime(cat_file)).strftime('%Y-%m-%d')
-                if cat_mtime > last_build:
-                    needs_rebuild = True
-            if needs_rebuild:
-                cats_to_build.append((slug, cat_path))
-
-        # Also rebuild categories marked dirty
-        dirty = _kcfg(config).get('dirty_categories', [])
-        for slug, cat_path in categories:
-            if slug in dirty and (slug, cat_path) not in cats_to_build:
-                cats_to_build.append((slug, cat_path))
-        if dirty:
-            _kcfg(config)['dirty_categories'] = []
-            save_config(alaya_dir, config)
-        if not cats_to_build:
-            print('Incremental: no categories need rebuild')
-            return
-    else:
-        # Full rebuild
-        cats_to_build = categories
-
-    # Phase 0: Migrate old _category.md files (first run after upgrade)
-    migration_count = 0
-    for slug, cat_path in cats_to_build:
-        if migrate_old_category_file(cat_path, slug):
-            migration_count += 1
-    if migration_count:
-        print(f'Migrated {migration_count} old _category.md file(s)')
-
-    # Phase 1: Scan cards, inject metadata, extract descriptions
-    category_data = {}
-    injected_count = 0
-    desc_generated_count = 0
-
-    for slug, cat_path in cats_to_build:
-        cards = scan_category_cards(cat_path, half_life)
-        category_data[slug] = cards
-        injected = sum(1 for c in cards if c.get('modified'))
-        injected_count += injected
-        # Count newly generated descriptions
-        desc_generated_count += sum(1 for c in cards if c.get('description') and c.get('modified'))
-
-    # Phase 1.5: Compute cross-category relationships from tag overlap
-    relationships = compute_category_relationships(category_data)
-
-    # Phase 2: Generate {cat}_category.md files (with cross-category links)
-    stale_descriptions = list(index_meta.get('stale_descriptions', []))
-    for slug in category_data:
-        cat_path = os.path.join(wiki_dir, slug)
-        cat_md_path = os.path.join(cat_path, category_file_for(slug))
-        content = generate_category_md(slug, category_data[slug], relationships)
-        write_with_auto_preserve(cat_md_path, content)
-
-        # Update index metadata
-        index_meta.setdefault('categories', {})[slug] = {
-            'last_build': today,
-            'card_count': len(category_data[slug]),
-        }
-        # Mark description as potentially stale if cards changed significantly
-        old_count = index_meta.get('categories', {}).get(slug, {}).get('card_count', 0)
-        if old_count and abs(len(category_data[slug]) - old_count) / max(old_count, 1) >= 0.3:
-            if slug not in stale_descriptions:
-                stale_descriptions.append(slug)
-
-    index_meta['stale_descriptions'] = stale_descriptions
-
-    # Phase 2.5: Collect <!-- AUTO (refined) --> blocks from category files
-    # so generate_index_md can use refined content instead of statistical headers
-    refined_descriptions = {}
-    for slug in category_data:
-        cat_path = os.path.join(wiki_dir, slug)
-        cat_md_path = os.path.join(cat_path, category_file_for(slug))
-        if os.path.exists(cat_md_path):
-            refined = read_refined_block(cat_md_path)
-            if refined and len(refined) > 50:
-                refined_descriptions[slug] = refined
-
-    # Phase 3: Generate wiki/index.md (with cross-category references)
-    if not target_category:
-        index_path = os.path.join(wiki_dir, 'index.md')
-        index_content = generate_index_md(category_data, relationships, refined_descriptions)
-        write_with_auto_preserve(index_path, index_content, skip_refined=True)
-        index_meta['last_full_build'] = today
-    elif incremental:
-        # Rebuild full index to reflect all categories
-        all_data = {}
-        for slug, cat_path in categories:
-            if slug in category_data:
-                all_data[slug] = category_data[slug]
-            else:
-                all_data[slug] = scan_category_cards(cat_path, half_life)
-        # Collect refined for all categories (including those not rebuilt)
-        all_refined = dict(refined_descriptions)  # start with just-built
-        for slug, cat_path in categories:
-            if slug not in all_refined:
-                cat_md_path = os.path.join(cat_path, category_file_for(slug))
-                if os.path.exists(cat_md_path):
-                    refined = read_refined_block(cat_md_path)
-                    if refined and len(refined) > 50:
-                        all_refined[slug] = refined
-        # Recompute relationships for the full dataset
-        all_relationships = compute_category_relationships(all_data)
-        index_path = os.path.join(wiki_dir, 'index.md')
-        index_content = generate_index_md(all_data, all_relationships, all_refined)
-        write_with_auto_preserve(index_path, index_content, skip_refined=True)
-
-    # Save index metadata
-    save_index_meta(alaya_dir, index_meta)
-
-    # Report
-    total_cards = sum(len(v) for v in category_data.values())
-    built_cats = len(category_data)
-    total_cats = len(categories)
-    mode = 'full' if not target_category and not incremental else \
-           f'single ({target_category})' if target_category else 'incremental'
-
-    print(f'Build complete [{mode}]')
-    print(f'  Categories built: {built_cats}/{total_cats}')
-    print(f'  Cards processed: {total_cards}')
-    print(f'  Metadata injected: {injected_count}')
-    print(f'  Descriptions generated: {desc_generated_count}')
-    if stale_descriptions:
-        print(f'  Categories with stale descriptions: {", ".join(stale_descriptions)}')
-
-    # BI hitchhiking: passive health check after index build
+def main(argv=None):
+    args = parse_args(argv)
     try:
-        health_items = bi_observer.check_health(alaya_dir, wiki_dir, config)
-        if health_items:
-            # Write to bi_notes.json (passive, no user-facing output unless severe)
-            bi_notes_path = os.path.join(alaya_dir, 'bi_notes.json')
-            existing_notes = []
-            if os.path.exists(bi_notes_path):
-                try:
-                    with open(bi_notes_path, 'r', encoding='utf-8') as f:
-                        existing_notes = json.load(f)
-                except (json.JSONDecodeError, IOError):
-                    pass
-            record = {
-                'date': today,
-                'trigger': 'build_index',
-                'system_health': health_items
-            }
-            existing_notes.append(record)
-            existing_notes = existing_notes[-20:]
-            with open(bi_notes_path, 'w', encoding='utf-8') as f:
-                json.dump(existing_notes, f, ensure_ascii=False, indent=2)
-            # Only print high-severity items
-            high_items = [h for h in health_items if h.get('severity') == 'high']
-            if high_items:
-                print(f'\n  ⚠️ BI health: {len(high_items)} high-severity issue(s)')
-                for h in high_items:
-                    print(f'    • {h["detail"]}')
-    except Exception:
-        pass  # BI hitchhiking must never block the build
-
-    print('Done.')
+        root = resolve_kb_root(args.kb_root)
+        paths = knowledge_paths(root)
+        config = load_effective_config(root)
+        if args.mark_description_updated:
+            mark_description(paths, config, args.mark_description_updated, args.check_only)
+        else:
+            build(
+                paths,
+                config,
+                category=args.category,
+                check_only=args.check_only,
+                confirm_removals=args.confirm_removals,
+            )
+        return 0
+    except (AlayaError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print("[ERROR] %s" % exc, file=sys.stderr)
+        return 2
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    sys.exit(main())

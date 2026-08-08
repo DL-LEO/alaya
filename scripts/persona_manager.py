@@ -1,284 +1,310 @@
-# Alaya · Persona Manager
-# List, delete, edit, and clone persona configurations.
-# Usage:
-#   python scripts/persona_manager.py list [alaya_dir]
-#   python scripts/persona_manager.py delete <name> [alaya_dir]
-#   python scripts/persona_manager.py clone <source> <target> [alaya_dir]
-#   python scripts/persona_manager.py edit <name> [alaya_dir]
+#!/usr/bin/env python3
+"""Safe persona discovery, cloning and recoverable removal."""
 
-import json, os, sys, shutil
+import argparse
+import json
+import os
+import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
 
-def get_manas_dir(alaya_dir):
-    d = os.path.join(alaya_dir, "manas")
-    if not os.path.exists(d):
-        print(f"manas/ directory not found in {alaya_dir}")
-        sys.exit(1)
-    return d
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib.runtime import (  # noqa: E402
+    AlayaError,
+    atomic_write_json,
+    atomic_write_text,
+    commit_text_bundle,
+    is_within,
+    knowledge_paths,
+    load_effective_config,
+    read_json,
+    resolve_kb_root,
+)
+from lib.yaml_utils import persona_key, safe_persona_key  # noqa: E402
+
+
+def parser():
+    root = argparse.ArgumentParser(description="Manage Alaya personas")
+    root.add_argument("--kb-root", help="Knowledge-base root override")
+    commands = root.add_subparsers(dest="command", required=True)
+    commands.add_parser("list", help="List personas")
+
+    clone = commands.add_parser("clone", help="Clone a persona")
+    clone.add_argument("source")
+    clone.add_argument("target")
+
+    delete = commands.add_parser("delete", help="Recoverably remove a persona")
+    delete.add_argument("name")
+    delete.add_argument("--new-default", help="Replacement if deleting the default persona")
+    delete.add_argument("--yes", action="store_true", help="Confirm the displayed move")
+
+    restore = commands.add_parser("restore", help="Restore a persona trash entry")
+    restore.add_argument("entry", help="Trash entry directory name")
+
+    purge = commands.add_parser("purge", help="Permanently delete one persona trash entry")
+    purge.add_argument("entry")
+    purge.add_argument("--confirm", required=True, help="Persona key shown in the entry")
+    return root
 
 
 def find_persona(manas_dir, name):
-    name_lower = name.lower().replace(" ", "_")
-    for f in os.listdir(manas_dir):
-        if f.endswith(".json"):
-            fpath = os.path.join(manas_dir, f)
-            with open(fpath, "r", encoding="utf-8") as fp:
-                data = json.load(fp)
-            if data.get("persona", "").lower().replace(" ", "_") == name_lower:
-                return fpath, data
-            if f.replace(".json", "").lower() == name_lower:
-                return fpath, data
-    return None, None
+    key = persona_key(str(manas_dir), name)
+    path = Path(manas_dir) / (key + ".json")
+    if not path.is_file() or path.parent.resolve() != Path(manas_dir).resolve():
+        return None, None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None, None, None
+    return key, path, data
 
 
-def cmd_list(alaya_dir):
-    manas_dir = get_manas_dir(alaya_dir)
-    files = [f for f in os.listdir(manas_dir) if f.endswith(".json") and not f.endswith("_history.json")]
-    if not files:
-        print("No personas found.")
-        return
-
-    print(f"{'Icon':<5} {'Name':<25} {'Lang':<6} {'Profile':<8} {'Interests'}")
-    print("-" * 80)
-    for f in sorted(files):
-        with open(os.path.join(manas_dir, f), "r", encoding="utf-8") as fp:
-            data = json.load(fp)
-        icon = data.get("icon", "🤖")
-        name = data.get("persona", f.replace(".json", ""))
-        lang = data.get("language", "?")
-        slug = f.replace(".json", "")
-        profile_path = os.path.join(manas_dir, f"{slug}_profile.md")
-        has_profile = "yes" if os.path.exists(profile_path) else ""
-        foci = list(data.get("ego_vector", {}).get("interest_foci", {}).keys())
-        interests = ", ".join(foci[:3])
-        if len(foci) > 3:
-            interests += "..."
-        print(f"{icon:<5} {name:<25} {lang:<6} {has_profile:<8} {interests}")
+def effective_language(data, config):
+    persona = config.get("persona", {})
+    if persona.get("language_mode", "global") == "global":
+        return config.get("language", "zh")
+    return data.get("language") or config.get("language", "zh")
 
 
-def cmd_delete(alaya_dir, name):
-    manas_dir = get_manas_dir(alaya_dir)
-    fpath, data = find_persona(manas_dir, name)
-    if not fpath:
-        print(f"Persona '{name}' not found.")
-        return
-
-    confirm = input(f"Delete persona '{data.get('persona', name)}'? (y/n): ").strip()
-    if confirm.lower() == "y":
-        os.remove(fpath)
-        print(f"Deleted: {fpath}")
-        slug = os.path.basename(fpath).replace(".json", "")
-        profile_path = os.path.join(os.path.dirname(fpath), f"{slug}_profile.md")
-        if os.path.exists(profile_path):
-            os.remove(profile_path)
-            print(f"Deleted: {profile_path}")
-    else:
-        print("Cancelled.")
-
-
-def cmd_clone(alaya_dir, source_name, target_name):
-    manas_dir = get_manas_dir(alaya_dir)
-    src_path, src_data = find_persona(manas_dir, source_name)
-    if not src_path:
-        print(f"Source persona '{source_name}' not found.")
-        return
-
-    # Clone and modify
-    import copy
-    new_data = copy.deepcopy(src_data)
-    new_data["persona"] = target_name
-    new_data["affinity"] = {}
-    new_data["interaction_history"] = []
-
-    target_fname = target_name.lower().replace(" ", "_").replace("'", "") + ".json"
-    target_path = os.path.join(manas_dir, target_fname)
-
-    if os.path.exists(target_path):
-        print(f"Target '{target_name}' already exists at {target_path}")
-        return
-
-    with open(target_path, "w", encoding="utf-8") as f:
-        json.dump(new_data, f, ensure_ascii=False, indent=2)
-    print(f"Cloned '{source_name}' -> '{target_name}' at {target_path}")
-
-    # Clone profile.md if it exists
-    src_slug = os.path.basename(src_path).replace(".json", "")
-    src_profile = os.path.join(manas_dir, f"{src_slug}_profile.md")
-    if os.path.exists(src_profile):
-        tgt_slug = target_fname.replace(".json", "")
-        tgt_profile = os.path.join(manas_dir, f"{tgt_slug}_profile.md")
-        shutil.copy2(src_profile, tgt_profile)
-        print(f"Cloned profile: {tgt_profile}")
-
-
-def cmd_edit(alaya_dir, name):
-    manas_dir = get_manas_dir(alaya_dir)
-    fpath, data = find_persona(manas_dir, name)
-    if not fpath:
-        print(f"Persona '{name}' not found.")
-        return
-
-    print(f"Editing: {data.get('persona', name)}")
-    print(f"Current fields: {list(data.keys())}")
-    print()
-    print("What to edit?")
-    print("  1. Language (current: {})".format(data.get("language", "?")))
-    print("  2. Confidence (current: {})".format(data.get("confidence", "?")))
-    print("  3. Omniview (current: {})".format(data.get("is_omniview", False)))
-    print("  4. Interest foci")
-    print("  5. Communication style")
-    print("  6. Title/description")
-    print("  7. Signature phrases (current: {} phrases)".format(len(data.get("signature_phrases", []))))
-    print("  8. Domain scope")
-    print("  9. Triggers")
-    print("  10. Icon (current: {})".format(data.get("icon", "🤖")))
-    print("  11. Edit profile.md (character definition)")
-    print()
-
-    choice = input("Choice [1-11]: ").strip()
-
-    if choice == "1":
-        lang = input(f"Language [zh/en, current: {data.get('language', '?')}]: ").strip()
-        if lang in ("zh", "en"):
-            data["language"] = lang
-    elif choice == "2":
-        conf = input(f"Confidence [0.0-1.0, current: {data.get('confidence', '?')}]: ").strip()
+def cmd_list(paths, config):
+    found = 0
+    for path in sorted(paths["manas"].glob("*.json"), key=lambda item: item.name.casefold()):
         try:
-            data["confidence"] = max(0.0, min(1.0, float(conf)))
-        except ValueError:
-            pass
-    elif choice == "3":
-        omni = input(f"Omniview [y/n, current: {data.get('is_omniview', False)}]: ").strip()
-        data["is_omniview"] = omni.lower() == "y"
-    elif choice == "4":
-        foci = data.get("ego_vector", {}).get("interest_foci", {})
-        print(f"Current interests: {list(foci.keys())}")
-        new_interests = input("New interests (comma-separated, or empty to keep): ").strip()
-        if new_interests:
-            new_foci = {}
-            for i, interest in enumerate(new_interests.split(",")):
-                key = interest.strip().lower().replace(" ", "_")
-                if key:
-                    val = max(0.5, 0.9 - i * 0.1)
-                    new_foci[key] = {"value": val, "floor": 0.1}
-            if new_foci:
-                data.setdefault("ego_vector", {})["interest_foci"] = new_foci
-    elif choice == "5":
-        print(f"Current communication: {data.get('ego_vector', {}).get('communication', {})}")
-        new_style = input("New style key (e.g. formal, casual): ").strip()
-        if new_style:
-            data.setdefault("ego_vector", {})["communication"] = {
-                new_style.lower().replace(" ", "_"): {"value": 0.8, "floor": 0.1}
-            }
-    elif choice == "6":
-        title = input(f"Title [current: {data.get('title', '')}]: ").strip()
-        if title:
-            data["title"] = title
-        title_zh = input(f"Title ZH [current: {data.get('title_zh', '')}]: ").strip()
-        if title_zh:
-            data["title_zh"] = title_zh
-    elif choice == "7":
-        current = data.get("signature_phrases", [])
-        print(f"Current phrases: {current}")
-        new_phrases = input("New phrases (comma-separated, or empty to keep): ").strip()
-        if new_phrases:
-            data["signature_phrases"] = [p.strip() for p in new_phrases.split(",") if p.strip()]
-    elif choice == "8":
-        scope = data.get("domain_scope", {"owns": [], "shares": [], "defers_to": {}})
-        print(f"Current owns: {scope.get('owns', [])}")
-        print(f"Current shares: {scope.get('shares', [])}")
-        print(f"Current defers_to: {scope.get('defers_to', {})}")
-        owns = input("New owns (comma-separated, or empty to keep): ").strip()
-        if owns:
-            scope["owns"] = [o.strip().lower().replace(" ", "_") for o in owns.split(",") if o.strip()]
-        data["domain_scope"] = scope
-    elif choice == "9":
-        trig = data.get("triggers", {"active": [], "passive": [], "emotions": []})
-        print(f"Current active: {trig.get('active', [])}")
-        print(f"Current passive: {trig.get('passive', [])}")
-        print(f"Current emotions: {trig.get('emotions', [])}")
-        active = input("New active triggers (comma-separated, or empty to keep): ").strip()
-        if active:
-            trig["active"] = [t.strip().lower() for t in active.split(",") if t.strip()]
-        data["triggers"] = trig
-    elif choice == "10":
-        current = data.get("icon", "🤖")
-        icon = input(f"Icon emoji [current: {current}]: ").strip()
-        if icon:
-            data["icon"] = icon
-    elif choice == "11":
-        slug = os.path.basename(fpath).replace(".json", "")
-        profile_path = os.path.join(os.path.dirname(fpath), f"{slug}_profile.md")
-        if os.path.exists(profile_path):
-            print(f"Profile file: {profile_path}")
-            print("Open this file in your editor to modify the character definition.")
-        else:
-            print("No profile.md found. Create one using the Persona Creation Protocol.")
-            create = input("Create a skeleton profile.md? (y/n): ").strip()
-            if create.lower() == "y":
-                name_str = data.get("persona", slug)
-                lines = [
-                    "---",
-                    f'summary: "{data.get("title", name_str)}"',
-                    f"trigger_hints: {data.get('triggers', {}).get('active', [])[:3]}",
-                    "---", "",
-                    f"# {name_str}", "",
-                    "## 核心人设", "",
-                    f"**你是谁：** {data.get('title', name_str)}", "",
-                    "**称呼方式：** （待补充）", "",
-                    "**核心特质：**",
-                    "- （待补充）", "",
-                    "## 语言风格基调", "",
-                    "### 比例", "- （待补充）", "",
-                    "### 标志性用语",
-                    f"- {', '.join(data.get('signature_phrases', []))}", "",
-                    "### 说话习惯", "- （待补充）", "",
-                    "## 使用场景", "",
-                    f"1. 用户主动提到「{name_str}」", "",
-                    "## 行为要求", "",
-                    "1. 启用后全程以角色身份说话，不跳出角色", "",
-                    "## 典型对话示例", "",
-                    "### 场景一：xxx",
-                    f"> 用户：xxx", f">", f"> {name_str}：xxx", "",
-                ]
-                with open(profile_path, "w", encoding="utf-8") as fp:
-                    fp.write("\n".join(lines))
-                print(f"Created: {profile_path}")
-        return
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            print("[WARN] Invalid persona JSON: %s" % path.name)
+            continue
+        found += 1
+        profile = paths["manas"] / (path.stem + "_profile.md")
+        print("%s\t%s\t%s\tprofile=%s" % (
+            path.stem,
+            data.get("persona", path.stem),
+            effective_language(data, config),
+            "yes" if profile.exists() else "no",
+        ))
+    if not found:
+        print("No personas found.")
 
-    with open(fpath, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"Saved: {fpath}")
+
+def cmd_clone(paths, source_name, target_name):
+    _source_key, source_path, data = find_persona(paths["manas"], source_name)
+    if source_path is None:
+        raise AlayaError("Source persona was not found: %s" % source_name)
+    target_key = safe_persona_key(target_name)
+    target_path = paths["manas"] / (target_key + ".json")
+    target_profile = paths["manas"] / (target_key + "_profile.md")
+    if target_path.parent.resolve() != paths["manas"].resolve():
+        raise AlayaError("Target persona path escaped the manas directory")
+    if target_path.exists() or target_profile.exists():
+        raise AlayaError("Target persona already exists: %s" % target_key)
+
+    cloned = json.loads(json.dumps(data, ensure_ascii=False))
+    cloned["persona"] = target_name
+    cloned["affinity"] = {}
+    cloned["interaction_history"] = []
+    writes = [(target_path, json.dumps(cloned, ensure_ascii=False, indent=2) + "\n")]
+    source_profile = source_path.with_name(source_path.stem + "_profile.md")
+    if source_profile.is_file():
+        writes.append((target_profile, source_profile.read_text(encoding="utf-8-sig")))
+    commit_text_bundle(
+        paths["alaya"],
+        "clone-persona-%s" % target_key,
+        writes,
+    )
+    print("Cloned persona: %s -> %s" % (source_path.stem, target_key))
+
+
+def mixed_reference_files(paths, key):
+    matches = []
+    candidates = list(paths["memory"].rglob("*.json")) + [
+        paths["alaya"] / "bi_notes.json",
+        paths["alaya"] / "bi_state.json",
+    ]
+    private_name = key + "_history.json"
+    for path in candidates:
+        if not path.is_file() or path.name == private_name:
+            continue
+        try:
+            if key.casefold() in path.read_text(encoding="utf-8-sig").casefold():
+                matches.append(path)
+        except (OSError, UnicodeError):
+            continue
+    return matches
+
+
+def planned_default_update(paths, config, key, replacement):
+    current = config.get("persona", {}).get("default_persona", "feynman")
+    if current.casefold() != key.casefold():
+        return None
+    if not replacement:
+        raise AlayaError("Deleting the default persona requires --new-default")
+    replacement_key, _path, _data = find_persona(paths["manas"], replacement)
+    if not replacement_key or replacement_key.casefold() == key.casefold():
+        raise AlayaError("Replacement default persona is invalid")
+    raw = read_json(paths["config"], default={})
+    updated = json.loads(json.dumps(raw, ensure_ascii=False))
+    updated.setdefault("persona", {})["default_persona"] = replacement_key
+    return raw, updated
+
+
+def move_bundle(paths, key, files):
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    destination = paths["alaya"] / ".trash" / "personas" / (stamp + "-" + key)
+    destination.mkdir(parents=True, exist_ok=False)
+    journal = paths["alaya"] / ".commit_journal.json"
+    state = {
+        "operation_id": "remove-persona-%s-%s" % (key, stamp),
+        "completed": [],
+        "remaining": [str(path) for path in files],
+        "destination": str(destination),
+    }
+    atomic_write_json(journal, state)
+    moved = []
+    try:
+        for source in files:
+            target = destination / source.name
+            os.replace(str(source), str(target))
+            moved.append((source, target))
+            state["completed"].append(str(source))
+            state["remaining"].remove(str(source))
+            atomic_write_json(journal, state)
+    except Exception:
+        for source, target in reversed(moved):
+            if target.exists() and not source.exists():
+                os.replace(str(target), str(source))
+        try:
+            destination.rmdir()
+        except OSError:
+            pass
+        raise
+    finally:
+        if not state["remaining"] or not destination.exists():
+            try:
+                journal.unlink()
+            except FileNotFoundError:
+                pass
+    return destination
+
+
+def recover_pending_persona_move(paths):
+    journal = paths["alaya"] / ".commit_journal.json"
+    state = read_json(journal, default={}) or {}
+    operation = str(state.get("operation_id", ""))
+    if not operation.startswith("remove-persona-"):
+        return None
+    destination = Path(state.get("destination", "")).resolve()
+    trash_root = paths["alaya"] / ".trash" / "personas"
+    if not destination.is_dir() or not is_within(destination, trash_root):
+        raise AlayaError("Persona removal journal has an invalid destination")
+    for source_value in list(state.get("remaining", [])):
+        source = Path(source_value).resolve()
+        if not is_within(source, paths["alaya"]):
+            raise AlayaError("Persona removal journal contains an unsafe source")
+        target = destination / source.name
+        if source.exists():
+            os.replace(str(source), str(target))
+        elif not target.exists():
+            raise AlayaError("Persona removal recovery cannot find source or destination: %s" % source)
+        state.setdefault("completed", []).append(str(source))
+        state["remaining"].remove(source_value)
+        atomic_write_json(journal, state)
+    journal.unlink()
+    print("Completed pending persona removal: %s" % destination.name)
+    return destination.name
+
+
+def cmd_delete(paths, config, name, replacement, confirmed):
+    key, persona_path, data = find_persona(paths["manas"], name)
+    if persona_path is None:
+        raise AlayaError("Persona was not found: %s" % name)
+    profile = paths["manas"] / (key + "_profile.md")
+    history = paths["memory"] / (key + "_history.json")
+    files = [path for path in (persona_path, profile, history) if path.exists()]
+    references = mixed_reference_files(paths, key)
+
+    print("Persona to remove: %s (%s)" % (data.get("persona", key), key))
+    for path in files:
+        print("  MOVE %s" % path)
+    for path in references:
+        print("  KEEP mixed/shared reference: %s" % path)
+    if not confirmed:
+        raise AlayaError("Preview only. Re-run with --yes to perform the recoverable move")
+
+    config_update = planned_default_update(paths, config, key, replacement)
+    if config_update is not None:
+        atomic_write_json(paths["config"], config_update[1])
+    try:
+        destination = move_bundle(paths, key, files)
+    except Exception:
+        if config_update is not None:
+            atomic_write_json(paths["config"], config_update[0])
+        raise
+    print("Persona moved to recoverable trash: %s" % destination)
+
+
+def cmd_restore(paths, entry):
+    trash_root = paths["alaya"] / ".trash" / "personas"
+    source = (trash_root / entry).resolve()
+    if not source.is_dir() or not is_within(source, trash_root):
+        raise AlayaError("Persona trash entry was not found")
+    targets = []
+    for item in source.iterdir():
+        base = paths["memory"] if item.name.endswith("_history.json") else paths["manas"]
+        target = base / item.name
+        if target.exists():
+            raise AlayaError("Restore target already exists: %s" % target)
+        targets.append((item, target))
+    restored = []
+    try:
+        for item, target in targets:
+            os.replace(str(item), str(target))
+            restored.append((item, target))
+    except Exception:
+        for item, target in reversed(restored):
+            if target.exists() and not item.exists():
+                os.replace(str(target), str(item))
+        raise
+    source.rmdir()
+    print("Restored persona entry: %s" % entry)
+
+
+def cmd_purge(paths, entry, confirmation):
+    trash_root = paths["alaya"] / ".trash" / "personas"
+    target = (trash_root / entry).resolve()
+    if not target.is_dir() or not is_within(target, trash_root):
+        raise AlayaError("Persona trash entry was not found")
+    key = entry.split("-", 2)[-1]
+    if confirmation != key:
+        raise AlayaError("--confirm must exactly match persona key: %s" % key)
+    shutil.rmtree(str(target))
+    print("Permanently deleted persona trash entry: %s" % entry)
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        root = resolve_kb_root(args.kb_root)
+        paths = knowledge_paths(root)
+        config = load_effective_config(root)
+        recovered = recover_pending_persona_move(paths)
+        if recovered and args.command == "delete":
+            return 0
+        if args.command == "list":
+            cmd_list(paths, config)
+        elif args.command == "clone":
+            cmd_clone(paths, args.source, args.target)
+        elif args.command == "delete":
+            cmd_delete(paths, config, args.name, args.new_default, args.yes)
+        elif args.command == "restore":
+            cmd_restore(paths, args.entry)
+        elif args.command == "purge":
+            cmd_purge(paths, args.entry, args.confirm)
+        return 0
+    except (AlayaError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print("[ERROR] %s" % exc, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
-    if not args:
-        print("Usage:")
-        print("  python scripts/persona_manager.py list [alaya_dir]")
-        print("  python scripts/persona_manager.py delete <name> [alaya_dir]")
-        print("  python scripts/persona_manager.py clone <source> <target> [alaya_dir]")
-        print("  python scripts/persona_manager.py edit <name> [alaya_dir]")
-        sys.exit(1)
-
-    cmd = args[0]
-    if cmd == "list":
-        alaya_dir = args[1] if len(args) > 1 else "alaya"
-        cmd_list(alaya_dir)
-    elif cmd == "delete":
-        name = args[1] if len(args) > 1 else None
-        alaya_dir = args[2] if len(args) > 2 else "alaya"
-        if name:
-            cmd_delete(alaya_dir, name)
-    elif cmd == "clone":
-        src = args[1] if len(args) > 1 else None
-        tgt = args[2] if len(args) > 2 else None
-        alaya_dir = args[3] if len(args) > 3 else "alaya"
-        if src and tgt:
-            cmd_clone(alaya_dir, src, tgt)
-    elif cmd == "edit":
-        name = args[1] if len(args) > 1 else None
-        alaya_dir = args[2] if len(args) > 2 else "alaya"
-        if name:
-            cmd_edit(alaya_dir, name)
-    else:
-        print(f"Unknown command: {cmd}")
+    sys.exit(main())

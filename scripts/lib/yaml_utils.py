@@ -1,7 +1,9 @@
-# Alaya · YAML Frontmatter Utilities
-# Shared functions for reading/writing YAML frontmatter in wiki cards.
+"""Strict frontmatter, card identity and naming helpers for Alaya."""
 
-import os, re
+import json
+import os
+import re
+from pathlib import Path
 
 
 METADATA_DEFAULTS = {
@@ -9,392 +11,309 @@ METADATA_DEFAULTS = {
     "created_by": "system",
     "strength": "0.5",
     "activation_count": "0",
-    "half_life": "30",
 }
+
+FRONTMATTER_RE = re.compile(
+    r"\A(?:\ufeff)?---[ \t]*\r?\n(?P<yaml>.*?)(?P<close>\r?\n---[ \t]*(?:\r?\n|\Z))",
+    re.DOTALL,
+)
+BACKUP_SUFFIXES = (".bak.md", ".backup.md", ".tmp.md", ".orig.md")
+
+
+def split_frontmatter(content):
+    """Return (yaml, body, closing_delimiter_offset) for strict line delimiters."""
+    match = FRONTMATTER_RE.match(content)
+    if not match:
+        return None
+    close_start = match.start("close") + len(match.group("close").split("---", 1)[0])
+    return match.group("yaml"), content[match.end():], close_start
 
 
 def read_frontmatter(filepath):
-    """Read a wiki card and return (content, yaml_str, dash_pos) or None."""
-    if not os.path.exists(filepath):
+    path = Path(filepath)
+    if not path.is_file():
         return None
-    with open(filepath, "r", encoding="utf-8") as f:
-        content = f.read()
-    if not content.startswith("---"):
+    content = path.read_text(encoding="utf-8-sig")
+    result = split_frontmatter(content)
+    if not result:
         return None
-    dash = content.find("---", 3)
-    if dash < 0:
-        return None
-    return content, content[3:dash], dash
+    yaml_str, _body, dash = result
+    return content, yaml_str, dash
+
+
+def yaml_quote(value):
+    """Emit a JSON string, which is a safe YAML double-quoted scalar."""
+    return json.dumps("" if value is None else str(value), ensure_ascii=False)
 
 
 def get_field(yaml_str, field):
-    """Extract a field's string value from YAML frontmatter."""
-    m = re.search(rf'^{re.escape(field)}:\s*(.+?)\s*$', yaml_str, re.MULTILINE)
-    if m:
-        return m.group(1).strip().strip('"').strip("'")
-    return None
+    match = re.search(r"^%s:\s*(.*?)\s*$" % re.escape(field), yaml_str, re.MULTILINE)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("\"", "'"):
+        if value[0] == "\"":
+            try:
+                return json.loads(value)
+            except (ValueError, TypeError):
+                pass
+        return value[1:-1]
+    return value
 
 
 def get_field_float(yaml_str, field):
-    """Extract a float field from YAML frontmatter."""
-    m = re.search(rf'^{re.escape(field)}:\s*([0-9.]+)', yaml_str, re.MULTILINE)
-    if m:
-        return float(m.group(1))
-    return None
+    value = get_field(yaml_str, field)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def set_field(yaml_str, field, value):
-    """Update a field in YAML frontmatter, or append if missing."""
-    pattern = re.compile(rf'^{re.escape(field)}:\s*.*$', re.MULTILINE)
-    replacement = f"{field}: {value}"
-    new_yaml = pattern.sub(replacement, yaml_str)
-    if new_yaml == yaml_str and f"{field}:" not in yaml_str:
-        new_yaml = yaml_str.rstrip() + f"\n{replacement}\n"
-    return new_yaml
+    replacement = "%s: %s" % (field, value)
+    pattern = re.compile(r"^%s:\s*.*$" % re.escape(field), re.MULTILINE)
+    if pattern.search(yaml_str):
+        return pattern.sub(lambda _match: replacement, yaml_str, count=1)
+    return yaml_str.rstrip() + "\n" + replacement + "\n"
+
+
+def remove_field(yaml_str, field):
+    pattern = re.compile(r"^%s:\s*.*(?:\r?\n|\Z)" % re.escape(field), re.MULTILINE)
+    return pattern.sub("", yaml_str, count=1)
+
+
+def set_string_field(yaml_str, field, value):
+    return set_field(yaml_str, field, yaml_quote(value))
 
 
 def inject_metadata(yaml_str, overrides=None):
-    """Inject missing Alaya metadata fields into YAML frontmatter."""
-    defaults = METADATA_DEFAULTS.copy()
+    defaults = dict(METADATA_DEFAULTS)
     if overrides:
         defaults.update(overrides)
-
-    yaml_lines = yaml_str.rstrip().split("\n")
-    need_separator = False
-    for line in reversed(yaml_lines):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("- ") or (line.startswith("  ") and stripped):
-            need_separator = True
-        break
-
-    additions = []
-    if need_separator:
-        additions.append("")
-    for key, val in defaults.items():
-        if f"{key}:" not in yaml_str:
-            additions.append(f"{key}: {val}")
-
-    if additions:
-        return yaml_str.rstrip() + "\n" + "\n".join(additions) + "\n"
-    return yaml_str
+    result = yaml_str
+    for key, value in defaults.items():
+        if get_field(result, key) is None:
+            result = set_field(result, key, value)
+    return result
 
 
 def rebuild_content(yaml_str, dash_pos, original):
-    """Rebuild file content from updated yaml_str."""
-    return "---" + yaml_str + original[dash_pos:]
+    """Rebuild using the original closing delimiter and body."""
+    return "---\n" + yaml_str.strip("\r\n") + "\n" + original[dash_pos:]
 
 
 def extract_title(yaml_str, fallback=""):
-    """Extract title from YAML frontmatter."""
-    m = re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', yaml_str, re.MULTILINE)
-    if m:
-        return m.group(1).strip()
-    return fallback
+    return get_field(yaml_str, "title") or fallback
 
 
 def slugify(name):
-    """Create a filesystem-safe slug from a name."""
-    import re as _re
-    s = name.lower().strip()
-    s = _re.sub(r'[：，。、（）\[\]{}]', '-', s)
-    s = _re.sub(r'[\\/:*?"<>|]', '-', s)
-    s = _re.sub(r'[\s_]+', '-', s)
-    s = _re.sub(r'-+', '-', s)
-    s = s.strip('-')
-    return s or 'untitled'
+    value = str(name or "").lower().strip()
+    value = re.sub(r"[：，。、（）\[\]{}]", "-", value)
+    value = re.sub(r"[\\/:*?\"<>|]", "-", value)
+    value = re.sub(r"[\s_]+", "-", value)
+    value = re.sub(r"-+", "-", value).strip("-. ")
+    if value.lower() in ("", ".", "..", "con", "prn", "aux", "nul"):
+        return "untitled"
+    if re.match(r"^(com|lpt)[1-9]$", value, re.IGNORECASE):
+        value = "item-" + value
+    return value
+
+
+def safe_persona_key(name):
+    raw = str(name or "").strip()
+    if not raw or any(value in raw for value in ("/", "\\", "\x00")) or raw in (".", ".."):
+        raise ValueError("Persona name contains an unsafe path component")
+    key = slugify(name).replace("-", "_")
+    if key in ("", ".", ".."):
+        raise ValueError("Persona name does not produce a safe key")
+    return key
 
 
 def persona_key(manas_dir, name):
-    """Resolve any persona identifier to the canonical key (JSON filename base).
-
-    Accepts: filename base, display name, Chinese name, slugified name.
-    Resolution order:
-      1. Filename match (case-insensitive): list manas/ and find matching .json
-      2. Display name / Chinese name search across all persona JSONs
-      3. Fallback: return slugified name
-
-    Returns the canonical key (e.g. "feynman" for all of "Richard Feynman",
-    "richard_feynman", "Feynman", "费曼").
-    Uses os.listdir + case-insensitive comparison to return the ACTUAL filename
-    base, not the input — correct on case-insensitive filesystems (Windows/macOS).
-    """
-    import json as _json
-
     if not name:
         return name
-
-    slug = name.lower().replace(" ", "_").replace("'", "")
-    name_lower = name.lower()
-
-    if os.path.isdir(manas_dir):
-        for f in os.listdir(manas_dir):
-            if not f.endswith(".json") or f.endswith("_history.json"):
-                continue
-            key = f.replace(".json", "")
-            key_lower = key.lower()
-
-            # 1. Filename match (case-insensitive): "Feynman" matches "feynman.json"
-            if key_lower == name_lower or key_lower == slug:
+    directory = Path(manas_dir)
+    lookup = str(name).lower()
+    normalized = lookup.replace(" ", "_").replace("'", "")
+    if directory.is_dir():
+        for path in directory.glob("*.json"):
+            key = path.stem
+            if key.lower() in (lookup, normalized):
                 return key
-
-            # 2. Display name / Chinese name match (read JSON content)
             try:
-                with open(os.path.join(manas_dir, f), "r", encoding="utf-8") as fp:
-                    data = _json.load(fp)
-                display = data.get("persona", "")
-                display_zh = data.get("persona_zh", "")
-                display_slug = display.lower().replace(" ", "_").replace("'", "")
-                if display_slug == slug or display_zh == name:
-                    return key
-            except (_json.JSONDecodeError, IOError):
-                pass
-
-    # 3. Fallback: return slugified name
-    return slug
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            display = str(data.get("persona", ""))
+            display_zh = str(data.get("persona_zh", ""))
+            if display.lower().replace(" ", "_").replace("'", "") == normalized:
+                return key
+            if display_zh == name:
+                return key
+    return normalized
 
 
 def is_category_file(fname):
-    """Check if a filename is a category file: {name}_category.md"""
-    return fname.endswith('_category.md')
+    return Path(fname).name.endswith("_category.md")
 
 
 def category_file_for(cat_slug):
-    """Return the category filename for a given category slug."""
-    return f'{cat_slug}_category.md'
+    return "%s_category.md" % cat_slug
+
+
+def is_knowledge_card(path_or_name):
+    path = Path(path_or_name)
+    name = path.name
+    lower = name.lower()
+    if not lower.endswith(".md") or name.startswith((".", "~$")):
+        return False
+    if lower in ("index.md", "_index.md", "log.md", "readme.md") or is_category_file(name):
+        return False
+    if any(lower.endswith(suffix) for suffix in BACKUP_SUFFIXES):
+        return False
+    if path.is_file():
+        try:
+            return read_frontmatter(path) is not None
+        except (OSError, UnicodeError):
+            return False
+    return True
 
 
 def get_all_cards(wiki_dir):
-    """Walk wiki/{category}/*.md and return [(category, card_name, fpath)].
-
-    Skips category files, index.md, log.md and non-directory entries.
-    Category is the subfolder name (e.g. 'deep-learning').
-    """
+    root = Path(wiki_dir)
     cards = []
-    if not os.path.isdir(wiki_dir):
+    if not root.is_dir():
         return cards
-    for entry in sorted(os.listdir(wiki_dir)):
-        cat_path = os.path.join(wiki_dir, entry)
-        if not os.path.isdir(cat_path):
+    for category in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
+        if not category.is_dir() or category.name.startswith("."):
             continue
-        for fname in sorted(os.listdir(cat_path)):
-            if fname.endswith('.md') and fname != 'index.md' and fname != 'log.md' and not is_category_file(fname):
-                card_name = fname[:-3]
-                cards.append((entry, card_name, os.path.join(cat_path, fname)))
+        for path in sorted(category.glob("*.md"), key=lambda item: item.name.casefold()):
+            if is_knowledge_card(path):
+                cards.append((category.name, path.stem, str(path)))
     return cards
 
 
-def find_card(wiki_dir, card_name):
-    """Search all category subfolders for a card. Returns fpath or None."""
-    md_name = card_name if card_name.endswith('.md') else card_name + '.md'
-    if not os.path.isdir(wiki_dir):
-        return None
-    for entry in os.listdir(wiki_dir):
-        cat_path = os.path.join(wiki_dir, entry)
-        if not os.path.isdir(cat_path):
-            continue
-        candidate = os.path.join(cat_path, md_name)
-        if os.path.exists(candidate):
-            return candidate
-    return None
+def build_card_index(wiki_dir):
+    by_identity = {}
+    by_name = {}
+    for category, name, path in get_all_cards(wiki_dir):
+        identity = "%s/%s" % (category, name)
+        by_identity[identity.casefold()] = path
+        by_name.setdefault(name.casefold(), []).append(path)
+    return {"by_identity": by_identity, "by_name": by_name}
+
+
+def find_cards(wiki_dir, card_name, category=None):
+    index = build_card_index(wiki_dir)
+    clean = str(card_name).replace("\\", "/").strip("/")
+    if category:
+        target = index["by_identity"].get((str(category) + "/" + clean).casefold())
+        return [target] if target else []
+    if "/" in clean:
+        target = index["by_identity"].get(clean.casefold())
+        return [target] if target else []
+    return list(index["by_name"].get(clean.casefold(), []))
+
+
+def find_card(wiki_dir, card_name, category=None):
+    matches = find_cards(wiki_dir, card_name, category=category)
+    return matches[0] if len(matches) == 1 else None
 
 
 def get_description(yaml_str):
-    """Extract description field from YAML frontmatter. Returns str or None."""
-    return get_field(yaml_str, 'description')
+    return get_field(yaml_str, "description")
+
+
+def description_issue(yaml_str):
+    """Classify a description problem without rewriting the user's text."""
+    match = re.search(r"^description:\s*(.*?)\s*$", yaml_str, re.MULTILINE)
+    if not match:
+        return "missing"
+    raw = match.group(1)
+    if raw.startswith('"'):
+        try:
+            value = json.loads(raw)
+        except (ValueError, TypeError):
+            return "encoding"
+    elif raw.startswith("'"):
+        if len(raw) < 2 or not raw.endswith("'"):
+            return "encoding"
+        value = raw[1:-1].replace("''", "'")
+    else:
+        if any(token in raw for token in (": ", " #", "\t")) or raw.startswith(("- ", "? ", "{", "[")):
+            return "encoding"
+        value = raw
+    if any(token in value for token in ("\ufffd", "锟斤拷", "[待填写]", "TODO", "TBD")):
+        return "content"
+    return None
 
 
 def set_description(yaml_str, description):
-    """Set description field in YAML frontmatter. Returns updated yaml_str."""
-    return set_field(yaml_str, 'description', description)
+    return set_string_field(yaml_str, "description", description)
 
 
 def _truncate_to_sentence(text, max_length):
-    """Truncate to max_length at the nearest sentence boundary."""
     if len(text) <= max_length:
         return text
-    # Try to find a sentence-ending character within range
-    for marker in ('。', '！', '？', '.', '!', '?'):
-        idx = text.rfind(marker, 0, max_length)
-        if idx > max_length * 0.6:  # must be reasonably close to max
-            return text[:idx + 1]
+    positions = [text.rfind(mark, 0, max_length) for mark in "。！？.!?"]
+    position = max(positions)
+    if position > max_length * 0.6:
+        return text[: position + 1]
     return text[:max_length]
 
 
 def extract_description_from_body(body_text, max_length=200):
-    """Extract a one-line description from card body text.
-
-    Priority:
-    1. Content under ## Abstract / ## 摘要 heading
-    2. First paragraph containing '本文提出' / '我们提出' (paper contribution)
-    3. First blockquote (original fallback)
-    4. First non-empty non-heading paragraph (last resort)
-
-    Truncates at sentence boundaries. Returns empty string if nothing usable found.
-
-    Args:
-        body_text: The full body text of a card.
-        max_length: Maximum character length (default 200).
-    """
-    import re as _re
-    lines = body_text.split('\n')
-
-    # 1. Look for Abstract / 摘要 / TL;DR section
-    abstract_mode = False
-    abstract_lines = []
+    lines = body_text.splitlines()
+    for heading in (r"Abstract", r"摘要", r"TL;?DR", r"概要"):
+        match = re.search(
+            r"^#{1,4}\s*%s\s*$\r?\n+(.+?)(?:\r?\n\s*\r?\n|\r?\n#|\Z)" % heading,
+            body_text,
+            re.MULTILINE | re.DOTALL | re.IGNORECASE,
+        )
+        if match:
+            value = " ".join(line.strip() for line in match.group(1).splitlines() if line.strip())
+            if len(value) > 10:
+                return _truncate_to_sentence(value, max_length)
+    paragraph = []
     for line in lines:
         stripped = line.strip()
-        if _re.match(r'^#{1,4}\s*(Abstract|摘要|TL;DR|TLDR|一句话简介|概要)', stripped):
-            abstract_mode = True
+        if not stripped or stripped.startswith("#"):
+            if paragraph:
+                value = " ".join(paragraph)
+                if len(value) > 10:
+                    return _truncate_to_sentence(value, max_length)
+                paragraph = []
             continue
-        if abstract_mode:
-            if stripped.startswith('#') and not stripped.startswith('##'):
-                break
-            if stripped and not stripped.startswith('> '):
-                abstract_lines.append(stripped)
-            elif not stripped and abstract_lines:
-                break
-    if abstract_lines:
-        desc = ' '.join(abstract_lines)
-        if len(desc) > 10:
-            return _truncate_to_sentence(desc, max_length)
-
-    # 2. Find paragraph with '本文提出' / '我们提出' / contribution keywords
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if any(kw in stripped for kw in ['本文提出', '我们提出', '本文介绍',
-                                          '本文主要', '本文旨在',
-                                          'This paper proposes', 'We propose',
-                                          'this paper presents', 'we present']):
-            para = [stripped]
-            for j in range(i + 1, min(i + 5, len(lines))):
-                s = lines[j].strip()
-                if not s or s.startswith('#'):
-                    break
-                para.append(s)
-            desc = ' '.join(para)
-            if len(desc) > 10:
-                return _truncate_to_sentence(desc, max_length)
-
-    # 3. Try blockquote — take first meaningful one
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith('> '):
-            desc = stripped[2:].strip()
-            if len(desc) > 10:
-                return _truncate_to_sentence(desc, max_length)
-
-    # 4. Try first non-heading, non-empty paragraph (original fallback)
-    para_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith('#'):
-            if para_lines:
-                desc = ' '.join(para_lines)
-                if len(desc) > 10:
-                    return _truncate_to_sentence(desc, max_length)
-                para_lines = []
-            continue
-        para_lines.append(stripped)
-
-    if para_lines:
-        desc = ' '.join(para_lines)
-        if len(desc) > 10:
-            return _truncate_to_sentence(desc, max_length)
-
-    return ''
+        if stripped.startswith("> "):
+            stripped = stripped[2:].strip()
+        paragraph.append(stripped)
+    value = " ".join(paragraph)
+    return _truncate_to_sentence(value, max_length) if len(value) > 10 else ""
 
 
 def get_tags(yaml_str):
-    """Extract tags from YAML frontmatter as a list of strings."""
-    # Inline array: tags: [tag1, tag2]
-    m = re.search(r'^tags:\s*\[(.+?)\]', yaml_str, re.MULTILINE)
-    if m:
-        return [t.strip().strip('"').strip("'") for t in m.group(1).split(",") if t.strip()]
-
-    # Block array: tags:\n  - tag1\n  - tag2
-    m = re.search(r'^tags:\s*$', yaml_str, re.MULTILINE)
-    if m:
-        tags = []
-        for line in yaml_str[m.end():].split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("- "):
-                tags.append(stripped[2:].strip().strip('"').strip("'"))
-            elif stripped and not line.startswith(" ") and not line.startswith("\t"):
-                break
-        return tags
-
-    # Single value: tags: tag1
-    m = re.search(r'^tags:\s*(\S+)', yaml_str, re.MULTILINE)
-    if m:
-        return [m.group(1).strip('"').strip("'")]
-
-    return []
-
-
-def discover_related_cards(wiki_dir, card_text, source_category=None,
-                           min_match_length=4, max_links=10):
-    """Discover existing wiki cards mentioned in the given text.
-
-    Performs case-insensitive substring matching of all existing card names
-    against the card body text. Returns top matches sorted by match length
-    (longer matches = more specific = more likely correct).
-
-    Args:
-        wiki_dir: Path to wiki/ directory.
-        card_text: Full body text of the newly imported card.
-        source_category: Category slug of the new card (excluded from results).
-        min_match_length: Minimum characters in a card name to consider.
-        max_links: Maximum number of links to return.
-
-    Returns:
-        List of (category, card_name, match_context) tuples.
-    """
-    SKIP_FILES = {'index.md', 'log.md'}
-    if not os.path.isdir(wiki_dir):
+    value = get_field(yaml_str, "tags")
+    if value is None:
         return []
+    if value.startswith("[") and value.endswith("]"):
+        try:
+            parsed = json.loads(value.replace("'", "\""))
+            return [str(item) for item in parsed]
+        except ValueError:
+            return [item.strip(" \"'") for item in value[1:-1].split(",") if item.strip()]
+    return [value]
 
-    # Scan all existing cards
-    all_cards = []
-    for entry in sorted(os.listdir(wiki_dir)):
-        cat_path = os.path.join(wiki_dir, entry)
-        if not os.path.isdir(cat_path):
-            continue
-        if source_category and entry == source_category:
-            continue
-        for fname in sorted(os.listdir(cat_path)):
-            if (fname.endswith('.md')
-                    and fname not in SKIP_FILES
-                    and not is_category_file(fname)):
-                all_cards.append((entry, fname[:-3]))
 
-    # Substring match against card body
+def discover_related_cards(wiki_dir, card_text, source_category=None, min_match_length=4, max_links=10):
     results = []
-    text_lower = card_text.lower()
-    # Also try with hyphens/spaces normalized for fuzzy matching
-    text_normalized = text_lower.replace('-', ' ').replace('  ', ' ')
-
-    for cat, name in all_cards:
-        name_lower = name.lower()
-        if len(name) < min_match_length:
+    normalized_text = card_text.casefold().replace("-", " ")
+    for category, name, _path in get_all_cards(wiki_dir):
+        if source_category and category == source_category:
             continue
-        # Match original name
-        idx = text_lower.find(name_lower)
-        # Also try with hyphens and spaces normalized
-        if idx < 0:
-            name_normalized = name_lower.replace('-', ' ').replace('  ', ' ')
-            # Only try normalized if the name actually changed
-            if name_normalized != name_lower:
-                idx = text_normalized.find(name_normalized)
-        if idx >= 0:
-            # Use the original text for context extraction
-            source_text = text_normalized if (idx < len(text_lower) and name_lower.replace('-', ' ') != name_lower) else text_lower
-            ctx_start = max(0, idx - 50)
-            ctx_end = min(len(card_text), idx + len(name) + 50)
-            context = card_text[ctx_start:ctx_end].replace('\n', ' ').strip()
-            results.append((cat, name, context))
-
-    # Sort by name length descending (longer = less likely false positive)
-    results.sort(key=lambda x: len(x[1]), reverse=True)
+        normalized_name = name.casefold().replace("-", " ")
+        if len(normalized_name) >= min_match_length and normalized_name in normalized_text:
+            position = normalized_text.find(normalized_name)
+            context = card_text[max(0, position - 50): position + len(name) + 50].replace("\n", " ")
+            results.append((category, name, context.strip()))
+    results.sort(key=lambda item: len(item[1]), reverse=True)
     return results[:max_links]

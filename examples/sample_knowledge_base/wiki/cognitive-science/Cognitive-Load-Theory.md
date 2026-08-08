@@ -8,7 +8,6 @@ created_by: system
 strength: 0.6
 last_activated: 2026-06-02
 activation_count: 0
-half_life: 30
 description: "认知负荷理论关注学习过程中工作记忆的负荷管理，为教学设计提供认知科学依据。"
 ---
 

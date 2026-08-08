@@ -16,7 +16,6 @@ created_by: system
 strength: 0.5
 last_activated: {{date}}
 activation_count: 0
-half_life: 30
 ---
 
 # {{title}}

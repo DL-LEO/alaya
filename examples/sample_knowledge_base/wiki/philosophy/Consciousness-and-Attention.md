@@ -8,7 +8,6 @@ created_by: system
 strength: 0.8
 last_activated: 2026-06-02
 activation_count: 0
-half_life: 30
 description: "你注意什么，你就成为什么——注意力是意识塑造自我的根本机制。"
 ---
 

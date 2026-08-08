@@ -1,267 +1,85 @@
-# Alaya · Batch Import
-# Import files from a directory into wiki/{category}/ with checkpoint/resume.
-# Supports .md, .txt, and .pdf (via format_converter, PyMuPDF optional).
-# 
-# Usage:
-#   python scripts/batch_import.py <source_dir> [--category cat] [--wiki dir] [--alaya dir]
+#!/usr/bin/env python3
+"""Plan or apply safe MD/TXT/PDF source-preserving imports."""
 
-import json, os, shutil, sys
-from datetime import datetime
+import argparse
+import json
+import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib.yaml_utils import read_frontmatter, inject_metadata, rebuild_content, extract_title, get_tags, slugify, extract_description_from_body
-from lib.format_converter import detect_format, extract_text, get_agent_template
+from build_index import build as build_index  # noqa: E402
+from lib.import_engine import apply_import_plan, plan_import, summarize_plan  # noqa: E402
+from lib.runtime import (  # noqa: E402
+    AlayaError,
+    knowledge_paths,
+    load_effective_config,
+    resolve_kb_root,
+)
+from perfume import run_xunxi  # noqa: E402
 
 
-def parse_args():
-    args = sys.argv[1:]
-    source = None
-    category = None
-    wiki_dir = 'wiki'
-    alaya_dir = 'alaya'
-
-    def _need_val(flag, val):
-        if val is not None and val.startswith('--'):
-            print(f"[batch_import] ERROR: {flag} requires a value, got '{val}'", file=sys.stderr)
-            sys.exit(1)
-        return val
-
-    i = 0
-    while i < len(args):
-        if args[i] == '--category' and i + 1 < len(args):
-            category = _need_val('--category', args[i + 1]); i += 2
-        elif args[i] == '--wiki' and i + 1 < len(args):
-            wiki_dir = _need_val('--wiki', args[i + 1]); i += 2
-        elif args[i] == '--alaya' and i + 1 < len(args):
-            alaya_dir = _need_val('--alaya', args[i + 1]); i += 2
-        elif not args[i].startswith('--'):
-            if source is None:
-                source = args[i]
-            i += 1
-        else:
-            print(f"[batch_import] WARNING: unknown flag '{args[i]}' (ignored)", file=sys.stderr)
-            i += 1
-
-    return source, category, wiki_dir, alaya_dir
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Import local files into Alaya")
+    parser.add_argument("source")
+    parser.add_argument("--category")
+    parser.add_argument("--kb-root", help="Knowledge-base root override")
+    parser.add_argument("--copy-raw", choices=("yes", "no"), required=True, help="Copy source files into raw for this task")
+    parser.add_argument("--dry-run", action="store_true", help="Show a zero-write import plan")
+    parser.add_argument("--parallel", action="store_true", help="Parallelize read/extract only")
+    parser.add_argument("--workers", type=int)
+    return parser.parse_args(argv)
 
 
-def load_checkpoint(alaya_dir):
-    path = os.path.join(alaya_dir, '.import_checkpoint.json')
-    if os.path.exists(path):
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return None
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        root = resolve_kb_root(args.kb_root)
+        paths = knowledge_paths(root)
+        config = load_effective_config(root)
+        category = args.category or config.get("import", {}).get("default_category", "uncategorized")
+        workers = args.workers or int(config.get("import", {}).get("parallel_workers", 4))
+        if workers < 1:
+            raise AlayaError("--workers must be at least 1")
+        plan = plan_import(
+            paths,
+            args.source,
+            category,
+            copy_raw=args.copy_raw == "yes",
+            parallel=args.parallel,
+            workers=workers,
+            max_chars=int(config.get("import", {}).get("max_chars_for_extraction", 8000)),
+        )
+        print(summarize_plan(plan))
+        if args.dry_run:
+            print("Dry run complete: no files, directories, reports, checkpoints or locks were created.")
+            return 0
+
+        blocked = [item for item in plan["items"] if item["action"] in ("llm_required", "pdf_dependency_required")]
+        if blocked:
+            if any(item["action"] == "pdf_dependency_required" for item in blocked):
+                print("PDF script import requires PyMuPDF. Install it with approval, use LLM import, or cancel.")
+            if any(item["action"] == "llm_required" for item in blocked):
+                print("Some formats require the host agent's LLM import path.")
+            return 1
+
+        result = apply_import_plan(paths, plan)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result["created"]:
+            try:
+                build_index(paths, config, category=result["category"])
+            except Exception as exc:
+                print("[ERROR] Cards were committed but index publication is pending: %s" % exc, file=sys.stderr)
+                return 1
+            print("Description choice: update the affected category now, or accumulate until its threshold/3-day deadline.")
+            try:
+                run_xunxi(paths, config)
+            except Exception as exc:
+                print("[WARN] Piggyback xunxi is pending: %s" % exc, file=sys.stderr)
+        return 0
+    except (AlayaError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print("[ERROR] %s" % exc, file=sys.stderr)
+        return 2
 
 
-def save_checkpoint(alaya_dir, cp):
-    path = os.path.join(alaya_dir, '.import_checkpoint.json')
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(cp, f, ensure_ascii=False, indent=2)
-
-
-def clear_checkpoint(alaya_dir):
-    path = os.path.join(alaya_dir, '.import_checkpoint.json')
-    if os.path.exists(path):
-        os.remove(path)
-
-
-def collect_files(source):
-    """Collect all importable files from source path."""
-    files = []
-    if os.path.isfile(source):
-        if detect_format(source) is not None:
-            files.append(source)
-    elif os.path.isdir(source):
-        for root, dirs, fnames in os.walk(source):
-            for f in sorted(fnames):
-                fpath = os.path.join(root, f)
-                if detect_format(fpath) is not None:
-                    files.append(fpath)
-    return files
-
-
-def slug_from_filename(filename):
-    """Generate a clean slug from a filename."""
-    name = os.path.splitext(filename)[0]
-    return slugify(name)
-
-
-def check_existing(wiki_dir, slug):
-    """Check if a card with this slug already exists in any category."""
-    if not os.path.isdir(wiki_dir):
-        return False
-    for entry in os.listdir(wiki_dir):
-        cat_path = os.path.join(wiki_dir, entry)
-        if os.path.isdir(cat_path):
-            candidate = os.path.join(cat_path, slug + '.md')
-            if os.path.exists(candidate):
-                return True
-    return False
-
-
-def main():
-    source, category, wiki_dir, alaya_dir = parse_args()
-
-    if not source:
-        print('Usage: python scripts/batch_import.py <source_dir_or_file> [--category cat]')
-        sys.exit(1)
-
-    if not os.path.exists(source):
-        print(f'Not found: {source}')
-        sys.exit(1)
-
-    today = datetime.now().strftime('%Y-%m-%d')
-
-    # Collect files
-    files = collect_files(source)
-    if not files:
-        print(f'No importable files found in: {source}')
-        print('  Supported: .md, .txt, .pdf')
-        sys.exit(0)
-
-    # Determine category
-    if not category:
-        # Guess from source directory name
-        category = slugify(os.path.basename(os.path.abspath(source)))
-        print(f'Auto-detected category: {category}')
-
-    cat_slug = slugify(category)
-    cat_dir = os.path.join(wiki_dir, cat_slug)
-    os.makedirs(cat_dir, exist_ok=True)
-
-    # Load checkpoint for resume
-    cp = load_checkpoint(alaya_dir)
-    if cp and cp.get('source') == os.path.abspath(source):
-        completed = set(cp.get('completed', []))
-        print(f'Resuming from checkpoint: {len(completed)} already imported')
-    else:
-        cp = {'source': os.path.abspath(source), 'category': cat_slug, 'completed': [], 'total': len(files)}
-        completed = set()
-
-    imported = 0
-    skipped = 0
-    unsupported = 0
-
-    for fpath in files:
-        fname = os.path.basename(fpath)
-        slug = slug_from_filename(fname)
-
-        # Idempotent skip
-        if slug in completed:
-            skipped += 1
-            continue
-
-        # Dedup against existing cards
-        if check_existing(wiki_dir, slug):
-            skipped += 1
-            cp['completed'].append(slug)
-            continue
-
-        # Extract text
-        text = extract_text(fpath)
-        if text is None:
-            print(f'  [unsupported] {fname}')
-            print(get_agent_template(fpath, today))
-            unsupported += 1
-            continue
-
-        # Build wiki card
-        # Determine source type from file extension
-        ext = os.path.splitext(fpath)[1].lower()
-        if ext in ('.pdf',):
-            source_type_val = 'pdf'
-        elif ext in ('.md',):
-            source_type_val = 'md'
-        elif ext in ('.txt',):
-            source_type_val = 'txt'
-        else:
-            source_type_val = 'local'
-
-        # Copy source file to raw/ for persistent storage and deep read
-        source_file_val = ''
-        raw_dir = 'raw'
-        raw_dest = os.path.join(raw_dir, slug + ext)
-        try:
-            if not os.path.exists(raw_dest):
-                os.makedirs(raw_dir, exist_ok=True)
-                shutil.copy2(fpath, raw_dest)
-            source_file_val = raw_dest
-        except (IOError, OSError):
-            pass  # Non-fatal — card still created without source file
-
-        # Build source frontmatter snippet
-        source_fm = ''
-        if source_file_val:
-            source_fm += f'source_file: "{source_file_val}"\n'
-        if source_type_val:
-            source_fm += f'source_type: {source_type_val}\n'
-
-        result = read_frontmatter(fpath)
-        if result:
-            # Source file has YAML — inject Alaya fields
-            content, yaml_str, dash = result
-            title = extract_title(yaml_str, slug)
-            tags = get_tags(yaml_str)
-            # Extract description from body if not already in YAML
-            if 'description:' not in yaml_str:
-                body_text = content[dash + 3:].lstrip('\n')
-                desc = extract_description_from_body(body_text)
-                if desc:
-                    desc_line = f'\ndescription: "{desc}"'
-                    yaml_str = yaml_str.rstrip() + desc_line
-            new_yaml = inject_metadata(yaml_str, {'last_activated': today, 'created_by': 'system'})
-            # Append source fields if not already present
-            if source_file_val and 'source_file:' not in yaml_str:
-                new_yaml = new_yaml.rstrip() + f'\nsource_file: "{source_file_val}"'
-            if source_type_val and 'source_type:' not in yaml_str:
-                new_yaml = new_yaml.rstrip() + f'\nsource_type: {source_type_val}'
-            card_content = rebuild_content(new_yaml, dash, content)
-        else:
-            # No YAML — create card with full frontmatter
-            title = slug
-            tags = []
-            desc = extract_description_from_body(text)
-            desc_line = f'\ndescription: "{desc}"' if desc else ''
-            card_content = (
-                f'---\ntitle: "{title}"\nseed_type: REFINED\ncreated_by: system\n'
-                f'strength: 0.5\nlast_activated: {today}\n'
-                f'activation_count: 0\nhalf_life: 30{desc_line}\n'
-                f'{source_fm}'
-                f'---\n\n{text}'
-            )
-
-        # Write to wiki/{category}/{slug}.md
-        dest = os.path.join(cat_dir, slug + '.md')
-        with open(dest, 'w', encoding='utf-8') as f:
-            f.write(card_content)
-
-        # Post-import: discover and inject cross-card wiki-links
-        from lib.yaml_utils import discover_related_cards
-        related = discover_related_cards(wiki_dir, text, source_category=cat_slug)
-        if related:
-            with open(dest, 'a', encoding='utf-8') as f:
-                f.write('\n## 跨分类链接\n')
-                for rcat, rname, _ctx in related:
-                    f.write(f'- [[../{rcat}/{rname}]] — 相关内容\n')
-
-        imported += 1
-        cp['completed'].append(slug)
-
-        # Save checkpoint after each file (crash-safe)
-        cp['total'] = len(files)
-        save_checkpoint(alaya_dir, cp)
-
-    # Clear checkpoint on success
-    clear_checkpoint(alaya_dir)
-
-    print(f'\nImport complete:')
-    print(f'  Category: {cat_slug}')
-    print(f'  Imported: {imported}')
-    print(f'  Skipped (existing): {skipped}')
-    print(f'  Unsupported: {unsupported}')
-    if imported > 0:
-        print(f'\nNext: python scripts/build_index.py --category {cat_slug}')
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    sys.exit(main())

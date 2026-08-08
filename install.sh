@@ -22,23 +22,12 @@ fi
 
 echo "Python found: $($PYTHON --version)"
 
-# Check if setup wizard exists
-WIZARD="$SCRIPT_DIR/scripts/setup_wizard.py"
-if [ -f "$WIZARD" ]; then
-    echo ""
-    echo "Run setup wizard? (y/n)"
-    read -r RUN_WIZARD
-    if [ "$RUN_WIZARD" = "y" ] || [ "$RUN_WIZARD" = "Y" ]; then
-        $PYTHON "$WIZARD"
-    fi
-else
-    echo "Setup wizard not found. You can run it later."
-fi
+VERIFY="$SCRIPT_DIR/scripts/verify_installation.py"
+$PYTHON "$VERIFY" --root "$SCRIPT_DIR"
 
 echo ""
 echo "=== Setup complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Place your knowledge cards in wiki/"
-echo "  2. Say 'alaya init' or 'scan cards' to your Agent"
-echo "  3. Start chatting: 'Enable Alaya'"
+echo "  1. Say 'alaya init' or '初始化识海' to choose a separate knowledge-base location."
+echo "  2. The skill installation has not created or modified a knowledge base."

@@ -1,228 +1,124 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Alaya v3.0 Installation Verification Script
+"""Verify the required multi-file Alaya installation contract."""
 
-This script verifies that all subskills are correctly installed and
-checks for common configuration issues.
-"""
-
-import os
-import sys
+import argparse
+import ast
 import json
+import re
+import sys
 from pathlib import Path
-from typing import List, Dict, Tuple
-
-# Force UTF-8 output for Windows compatibility
-if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 
-def check_file_exists(path: Path, description: str) -> Tuple[bool, str]:
-    """Check if a file exists and return status with message."""
-    if path.exists():
-        return True, f"✓ {description} found"
-    else:
-        return False, f"✗ {description} missing"
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def check_directory_structure(root: Path) -> List[Tuple[bool, str]]:
-    """Check core directory structure."""
-    results = []
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Verify an Alaya skill installation")
+    parser.add_argument("--root", default=str(ROOT), help="Skill package root")
+    parser.add_argument("--single-file", action="store_true", help="Require the optional SKILL_FULL.md artifact")
+    return parser.parse_args(argv)
 
-    # Core directories
-    dirs_to_check = [
-        ("scripts", "Python scripts directory"),
-        ("manas", "Default personas directory"),
-        ("templates", "Import templates directory"),
-        ("config", "Default configuration directory"),
-        ("examples", "Example knowledge base"),
-        ("skills", "Subskills directory"),
+
+def skill_header(path):
+    text = path.read_text(encoding="utf-8-sig")
+    match = re.match(r"\A---\r?\n(.*?)\r?\n---\r?\n", text, re.DOTALL)
+    if not match:
+        return None
+    header = match.group(1)
+    keys = re.findall(r"^([A-Za-z_][A-Za-z0-9_-]*):", header, re.MULTILINE)
+    name = re.search(r"^name:\s*(.+)$", header, re.MULTILINE)
+    description = re.search(r"^description:\s*(.+)$", header, re.MULTILINE)
+    return bool(name and description and set(keys) == {"name", "description"})
+
+
+def verify(root, single_file=False):
+    required = [
+        "SKILL.md",
+        "README.md",
+        "SKILL_GUIDE.md",
+        "SKILL_REF.md",
+        "config/default_config.json",
+        "scripts/setup_wizard.py",
+        "scripts/batch_import.py",
+        "scripts/academic_import.py",
+        "scripts/import_paper.py",
+        "scripts/post_process.py",
+        "scripts/import_quality_review.py",
+        "scripts/build_index.py",
+        "scripts/perfume.py",
+        "scripts/perfume_memory.py",
+        "scripts/perfume_knowledge.py",
+        "scripts/perfume_persona.py",
+        "scripts/persona_manager.py",
+        "scripts/memory_manager.py",
+        "scripts/bi_observer.py",
+        "scripts/fix_links.py",
+        "scripts/health_check.py",
+        "scripts/build_skill_full.py",
+        "scripts/lib/runtime.py",
+        "scripts/lib/yaml_utils.py",
+        "scripts/lib/index_utils.py",
+        "scripts/lib/link_utils.py",
+        "scripts/lib/import_engine.py",
+        "scripts/lib/format_converter.py",
+        "templates/persona_template.json",
+        "templates/persona_profile_template.md",
+        "requirements.txt",
     ]
-
-    for dir_name, description in dirs_to_check:
-        path = root / dir_name
-        if path.exists() and path.is_dir():
-            results.append((True, f"✓ {description} exists"))
-        else:
-            results.append((False, f"✗ {description} missing"))
-
-    # Core files
-    files_to_check = [
-        ("SKILL.md", "Main skill file"),
-        ("SKILL_GUIDE.md", "Operation guide"),
-        ("SKILL_REF.md", "Reference documentation"),
-        ("SKILL_FULL.md", "Merged skill file"),
-        ("CHANGELOG.md", "Changelog"),
-        ("README.md", "Project README"),
-        ("LICENSE", "License file"),
-    ]
-
-    for file_name, description in files_to_check:
-        path = root / file_name
-        results.append(check_file_exists(path, description))
-
-    return results
-
-
-def check_subskills(root: Path) -> List[Tuple[bool, str]]:
-    """Check subskill installation."""
-    results = []
-
     subskills = [
-        ("alaya-retrieval", "2.0.0"),
-        ("alaya-memory", "1.0.0"),
-        ("alaya-persona", "1.7.0"),
-        ("alaya-import", "1.0.0"),
-        ("alaya-maintenance", "1.0.0"),
+        "skills/%s/SKILL.md" % name
+        for name in ("alaya-retrieval", "alaya-memory", "alaya-persona", "alaya-import", "alaya-maintenance")
     ]
-
-    for subskill_name, expected_version in subskills:
-        subskill_path = root / "skills" / subskill_name / "SKILL.md"
-
-        if not subskill_path.exists():
-            results.append((False, f"✗ {subskill_name} subskill missing"))
+    failures = []
+    checks = []
+    for relative in required + subskills:
+        path = root / relative
+        ok = path.is_file()
+        checks.append((ok, relative))
+        if not ok:
+            failures.append("Missing required file: %s" % relative)
+    for relative in ["SKILL.md"] + subskills:
+        path = root / relative
+        if path.is_file() and not skill_header(path):
+            failures.append("Invalid skill frontmatter: %s" % relative)
+    for relative in [item for item in required if item.endswith(".py")]:
+        path = root / relative
+        if not path.is_file():
             continue
-
-        # Read and check version
         try:
-            with open(subskill_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                if f"version: {expected_version}" in content:
-                    results.append((True, f"✓ {subskill_name} v{expected_version} installed"))
-                else:
-                    results.append((False, f"⚠ {subskill_name} version mismatch (expected {expected_version})"))
-        except Exception as e:
-            results.append((False, f"✗ {subskill_name} error reading: {e}"))
+            ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        except (SyntaxError, UnicodeError) as exc:
+            failures.append("Invalid Python syntax: %s (%s)" % (relative, exc))
+    try:
+        default = json.loads((root / "config" / "default_config.json").read_text(encoding="utf-8-sig"))
+        if not isinstance(default, dict):
+            failures.append("Default configuration must contain an object")
+    except (OSError, ValueError) as exc:
+        failures.append("Default configuration is invalid: %s" % exc)
 
-    return results
-
-
-def check_scripts(root: Path) -> List[Tuple[bool, str]]:
-    """Check Python scripts availability."""
-    results = []
-
-    scripts = [
-        ("setup_wizard.py", "Setup wizard"),
-        ("build_index.py", "Index builder"),
-        ("perfume.py", "Xunxi orchestrator"),
-        ("import_paper.py", "Paper import"),
-        ("batch_import.py", "Batch import"),
-        ("health_check.py", "Health check"),
-        ("fix_links.py", "Link fixer"),
-        ("bi_observer.py", "BI observer"),
-    ]
-
-    for script_name, description in scripts:
-        script_path = root / "scripts" / script_name
-        results.append(check_file_exists(script_path, f"{description} ({script_name})"))
-
-    return results
+    optional = root / "SKILL_FULL.md"
+    if single_file and not optional.is_file():
+        failures.append("Single-file mode requires SKILL_FULL.md")
+    return checks, failures, optional.is_file()
 
 
-def check_default_personas(root: Path) -> List[Tuple[bool, str]]:
-    """Check default persona files."""
-    results = []
-
-    personas = [
-        "feynman",
-        "buddha",
-        "zhuangzi",
-        "socrates",
-        "carl_jung",
-        "galileo",
-        "audrey_hepburn",
-        "xiaozhao",
-    ]
-
-    for persona_name in personas:
-        json_path = root / "manas" / f"{persona_name}.json"
-        md_path = root / "manas" / f"{persona_name}_profile.md"
-
-        if json_path.exists() and md_path.exists():
-            results.append((True, f"✓ {persona_name} persona complete"))
-        elif json_path.exists():
-            results.append((True, f"⚠ {persona_name} persona JSON only (profile.md missing)"))
-        else:
-            results.append((False, f"✗ {persona_name} persona missing"))
-
-    return results
-
-
-def print_results(results: List[Tuple[bool, str]], title: str):
-    """Print check results with summary."""
-    print(f"\n{title}")
-    print("=" * 60)
-
-    passed = sum(1 for result, _ in results if result)
-    failed = sum(1 for result, _ in results if not result)
-    warned = sum(1 for result, msg in results if not result and msg.startswith("⚠"))
-
-    for result, message in results:
-        print(message)
-
-    print("-" * 60)
-    print(f"Summary: {passed} passed, {warned} warnings, {failed} failed")
-    print()
-
-
-def main():
-    """Main verification function."""
-    print("Alaya v3.0 Installation Verification")
-    print("=" * 60)
-
-    # Get project root
-    root = Path(__file__).parent.parent.absolute()
-
-    print(f"Checking installation at: {root}")
-    print()
-
-    # Run checks
-    all_results = []
-
-    # 1. Directory structure
-    dir_results = check_directory_structure(root)
-    print_results(dir_results, "1. Directory Structure")
-    all_results.extend(dir_results)
-
-    # 2. Subskills
-    subskill_results = check_subskills(root)
-    print_results(subskill_results, "2. Subskills")
-    all_results.extend(subskill_results)
-
-    # 3. Scripts
-    script_results = check_scripts(root)
-    print_results(script_results, "3. Python Scripts")
-    all_results.extend(script_results)
-
-    # 4. Default personas
-    persona_results = check_default_personas(root)
-    print_results(persona_results, "4. Default Personas")
-    all_results.extend(persona_results)
-
-    # Overall summary
-    total_passed = sum(1 for result, _ in all_results if result)
-    total_failed = sum(1 for result, _ in all_results if not result)
-
-    print("=" * 60)
-    print(f"Overall: {total_passed}/{len(all_results)} checks passed")
-
-    if total_failed == 0:
-        print("\n✓ Installation verified successfully!")
-        print("\nNext steps:")
-        print("  1. Run: 'alaya init' to initialize your knowledge base")
-        print("  2. Run: 'health check' to verify system health")
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        root = Path(args.root).expanduser().resolve()
+        checks, failures, optional_present = verify(root, args.single_file)
+        passed = sum(ok for ok, _name in checks)
+        print("Required multi-file checks: %d/%d passed" % (passed, len(checks)))
+        print("Optional SKILL_FULL.md: %s" % ("present" if optional_present else "not present (allowed)"))
+        for failure in failures:
+            print("[ERROR] %s" % failure)
+        if failures:
+            return 1
+        print("[OK] Alaya installation is complete for %s mode." % ("single-file" if args.single_file else "multi-file"))
         return 0
-    else:
-        print(f"\n✗ Installation has {total_failed} issues")
-        print("\nTroubleshooting:")
-        print("  1. Ensure you cloned the complete repository")
-        print("  2. Check that all subdirectories were created")
-        print("  3. Verify file permissions")
-        print("  4. Try re-running: git clone --depth 1 <repo-url>")
-        return 1
+    except (OSError, ValueError) as exc:
+        print("[ERROR] Verification could not run: %s" % exc, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

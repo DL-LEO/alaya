@@ -8,7 +8,6 @@ created_by: system
 strength: 0.7
 last_activated: 2026-06-02
 activation_count: 0
-half_life: 30
 description: "工作记忆是认知心理学中用于描述在复杂认知任务中临时存储和操纵信息的核心概念。"
 ---
 

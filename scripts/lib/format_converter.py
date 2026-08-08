@@ -1,6 +1,6 @@
 # Alaya · Format Converter 
-# Zero-dependency format conversion for wiki card import.
-# Handles MD/TXT natively, PDF via PyMuPDF (optional).
+# Standard-library text conversion plus optional PDF extraction.
+# Handles MD/TXT natively; PDF script import requires PyMuPDF.
 # Unsupported formats return None with Agent guidance template.
 
 import os, sys
@@ -17,9 +17,8 @@ created_by: llm_import
 strength: 0.6
 last_activated: {date}
 activation_count: 0
-half_life: 30
 description: "一句话描述文件核心内容"
-source_file: "raw/{slug}.{ext}"
+source_path: "{file_path}"
 source_type: {source_type}
 tags: ["tag1", "tag2", "tag3"]
 created: {date}
@@ -59,10 +58,32 @@ def detect_format(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     formats = {
         '.md': 'markdown',
+        '.markdown': 'markdown',
         '.txt': 'text',
+        '.rst': 'text',
+        '.py': 'text',
+        '.js': 'text',
+        '.ts': 'text',
+        '.tsx': 'text',
+        '.jsx': 'text',
+        '.json': 'text',
+        '.yaml': 'text',
+        '.yml': 'text',
+        '.toml': 'text',
+        '.csv': 'text',
+        '.log': 'text',
         '.pdf': 'pdf',
     }
     return formats.get(ext)
+
+
+def pdf_available():
+    """Return whether the optional PDF extraction dependency is installed."""
+    try:
+        import fitz  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 def extract_text(filepath, max_chars=None):
@@ -81,7 +102,7 @@ def extract_text(filepath, max_chars=None):
 
     if text is not None and max_chars is not None and len(text) >= max_chars:
         print(f"Warning: Content truncated at {max_chars} characters. "
-              f"Use --max-chars N to increase or --mode full to extract entire file.",
+              f"Increase the configured extraction preview limit when needed.",
               file=sys.stderr)
     return text
 
@@ -119,13 +140,13 @@ def get_agent_template(filepath, date_str=''):
 
 def _read_direct(filepath, max_chars):
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
             return f.read(max_chars) if max_chars is not None else f.read()
     except (UnicodeDecodeError, IOError):
         try:
             with open(filepath, 'r', encoding='gbk') as f:
                 return f.read(max_chars) if max_chars is not None else f.read()
-        except IOError:
+        except (UnicodeDecodeError, IOError):
             return None
 
 

@@ -18,22 +18,13 @@ if (Get-Command python3 -ErrorAction SilentlyContinue) {
 $version = & $python --version 2>&1
 Write-Host "Python found: $version"
 
-# Check if setup wizard exists
-$wizard = Join-Path $PSScriptRoot "scripts\setup_wizard.py"
-if (Test-Path $wizard) {
-    Write-Host ""
-    $runWizard = Read-Host "Run setup wizard? (y/n)"
-    if ($runWizard -eq "y" -or $runWizard -eq "Y") {
-        & $python $wizard
-    }
-} else {
-    Write-Host "Setup wizard not found. You can create it later."
-}
+$verify = Join-Path $PSScriptRoot "scripts\verify_installation.py"
+& $python $verify --root $PSScriptRoot
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host ""
 Write-Host "=== Setup complete ===" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. Place your knowledge cards in wiki/"
-Write-Host "  2. Say 'alaya init' or 'scan cards' to your Agent"
-Write-Host "  3. Start chatting: 'Enable Alaya'"
+Write-Host "  1. Say 'alaya init' or '初始化识海' to choose a separate knowledge-base location."
+Write-Host "  2. The skill installation has not created or modified a knowledge base."

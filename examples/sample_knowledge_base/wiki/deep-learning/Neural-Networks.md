@@ -8,7 +8,6 @@ created_by: system
 strength: 0.6
 last_activated: 2026-06-02
 activation_count: 0
-half_life: 30
 description: "神经网络是深度学习的基础模型，通过多层非线性变换学习数据的层次化表示。"
 ---
 

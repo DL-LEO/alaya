@@ -8,7 +8,6 @@ created_by: system
 strength: 0.7
 last_activated: 2026-06-02
 activation_count: 0
-half_life: 30
 description: "Transformer 是 Vaswani et al. (2017) 提出的序列建模架构，完全基于注意力机制，摒弃了循环和卷积结构，成为现代深度学习的基础范式。"
 ---
 

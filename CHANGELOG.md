@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.1.0 — 2026-08-08
+
+### Changed
+
+- Separated the updatable skill from the user-owned `alaya/wiki/raw` knowledge base and added safe first-run path selection.
+- Replaced broad automatic activation with contextual routing and one-click global persona language.
+- Reworked interaction memory into per-answer/group idempotent commits, bounded shared state/history, explicit user profile consent, and bounded BI state/history.
+- Unified knowledge decay around a 90-day cold threshold with daily piggyback settlement and upgrade-safe baselines.
+- Rebuilt import as plan-then-commit with per-task raw-copy choice, content-hash collision handling, optional PDF support, and serialized publication.
+- Made category indexing dynamic, complete after incremental updates, and protective against unconfirmed category removal.
+- Made health and link checks read-only by default; automatic link edits are limited to unique case corrections.
+- Made role removal recoverable and protected default-role replacement and path boundaries.
+- Treated `SKILL_FULL.md` as an optional compatibility artifact; normal installation validates the multi-file package.
+
+### Compatibility
+
+- Legacy `hot_limit/cold_limit` fields remain readable without rewriting user configuration.
+- Existing cards with the historical `half_life: 30` default follow the new global policy; explicit non-default per-card half-life values remain honored.
+- Dynamic category validation supports the current 16-category knowledge base and future additions without a fixed count.
+
 All notable changes to Alaya will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).

@@ -8,7 +8,6 @@ created_by: system
 strength: 0.65
 last_activated: 2026-06-02
 activation_count: 0
-half_life: 30
 description: "双过程理论区分了直觉性快思考和反思性慢思考两种认知系统，是认知心理学的核心理论之一。"
 ---
 

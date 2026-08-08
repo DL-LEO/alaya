@@ -1,144 +1,255 @@
-# Alaya · Memory System Operations
-# Interaction history (hot/cold), ambient state (mood, attention), migration.
+"""Pure builders and safe writers for private and shared Alaya memory."""
 
-import json, os, shutil
-from datetime import datetime
+import hashlib
+import json
+from datetime import date, datetime
+from pathlib import Path
 
-_ALAYA_TODAY = os.environ.get("ALAYA_TODAY")
-
-def _today_str() -> str:
-    if _ALAYA_TODAY:
-        return _ALAYA_TODAY
-    return datetime.now().strftime("%Y-%m-%d")
+from lib.runtime import atomic_write_json, read_json
 
 
-def write_history(memory_dir, persona_key, entry, hot_limit=5, cold_limit=45):
-    """Write an interaction entry to persona's history file (hot/cold dual-zone).
-
-    persona_key should be the canonical key (JSON filename base, e.g. "feynman").
-    Callers should resolve display names via persona_key() in lib/yaml_utils before calling.
-    """
-    os.makedirs(memory_dir, exist_ok=True)
-
-    history_path = os.path.join(memory_dir, f"{persona_key}_history.json")
-
-    history = {"hot": [], "cold": []}
-    if os.path.exists(history_path):
-        try:
-            with open(history_path, "r", encoding="utf-8") as fp:
-                loaded = json.load(fp)
-                if isinstance(loaded, dict):
-                    history = loaded
-                elif isinstance(loaded, list):
-                    history = {"hot": loaded[-hot_limit:], "cold": []}
-        except (json.JSONDecodeError, IOError):
-            history = {"hot": [], "cold": []}
-
-    hot = history.get("hot", [])
-    cold = history.get("cold", [])
-    hot.append(entry)
-
-    if len(hot) > hot_limit:
-        oldest = hot.pop(0)
-        cold_entry = {
-            "date": oldest["date"],
-            "topic": oldest["topic"],
-            "tags": oldest.get("tags", []),
-            "summary": oldest.get("summary", oldest["topic"])
-        }
-        cold.append(cold_entry)
-
-    cold = cold[-cold_limit:]
-
-    with open(history_path, "w", encoding="utf-8") as fp:
-        json.dump({"hot": hot, "cold": cold}, fp, ensure_ascii=False, indent=2)
+def _today_str():
+    return date.today().isoformat()
 
 
-def _ensure_ambient_fields(ambient):
-    """Initialize missing semantic fields for forward compatibility."""
-    defaults = {
-        "mood_trajectory": [],
-        "recent_themes": "",
-        "open_threads": [],
-        "user_style_notes": "",
-        "save_prompt_count": 0
+def stable_event_id(persona_key, user_text, answer_text):
+    value = "%s\n%s\n%s" % (persona_key, user_text or "", answer_text or "")
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+
+
+def _unique(existing, incoming, key=None):
+    result = list(existing or [])
+    seen = set()
+    for item in result:
+        marker = key(item) if key else json.dumps(item, ensure_ascii=False, sort_keys=True)
+        seen.add(marker)
+    for item in incoming or []:
+        marker = key(item) if key else json.dumps(item, ensure_ascii=False, sort_keys=True)
+        if marker not in seen:
+            result.append(item)
+            seen.add(marker)
+    return result
+
+
+def _compress_history_entry(entry):
+    return {
+        key: entry.get(key)
+        for key in (
+            "date", "type", "subject", "summary", "before", "after", "topics",
+            "tags", "decisions", "group_id", "event_id",
+        )
+        if entry.get(key) not in (None, "", [])
     }
-    for key, default in defaults.items():
-        if key not in ambient:
-            ambient[key] = default
-    return ambient
 
 
-def update_ambient(memory_dir, mood=None, tags=None):
-    """
-    Mechanical layer only: mood overwrite + trajectory push + tag decay/boost.
-    Semantic fields (recent_themes, open_threads, user_style_notes) are
-    preserved as-is — the LLM writes those directly at session boundary.
-    """
-    os.makedirs(memory_dir, exist_ok=True)
-    ambient_path = os.path.join(memory_dir, "ambient.json")
+def _json_bytes(value):
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
 
-    ambient = {"recent_mood": "", "recent_attention": {}}
-    if os.path.exists(ambient_path):
-        try:
-            with open(ambient_path, "r", encoding="utf-8") as f:
-                ambient = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
 
-    ambient = _ensure_ambient_fields(ambient)
+def build_private_memory_update(memory_dir, persona_key, entry, config, event_id, group_id=None):
+    """Build one idempotent active-day update without writing it."""
+    memory_path = Path(memory_dir) / (persona_key + "_history.json")
+    current = read_json(memory_path, default={}) or {}
+    if not isinstance(current, dict):
+        raise ValueError("Private memory must be a JSON object: %s" % memory_path)
+    hot = list(current.get("hot", []))
+    cold = list(current.get("cold", []))
+    recent_ids = list(current.get("recent_event_ids", []))
+    if event_id in recent_ids:
+        return memory_path, current, False
 
-    # Global cap: ensure trajectory never exceeds 25 entries
-    traj = ambient.get("mood_trajectory", [])
-    if len(traj) > 25:
-        ambient["mood_trajectory"] = traj[-25:]
+    today = entry.get("date") or _today_str()
+    active = current.get("active_day")
+    if active and active.get("date") != today:
+        hot.append(active)
+        active = None
 
-    today = _today_str()
+    if not active:
+        active = {
+            "date": today,
+            "topics": [],
+            "tags": [],
+            "summary": "",
+            "key_insights": [],
+            "decisions": [],
+            "open_threads": [],
+            "cards_cited": [],
+            "turns": 0,
+            "event_ids": [],
+            "last_updated": "",
+        }
 
-    # Mood: overwrite recent_mood + push to trajectory (cap 3)
+    active["topics"] = _unique(active.get("topics", []), entry.get("topics") or ([entry.get("topic")] if entry.get("topic") else []), key=lambda value: str(value).casefold())
+    active["tags"] = _unique(active.get("tags", []), entry.get("tags", []), key=lambda value: str(value).casefold())
+    active["key_insights"] = _unique(active.get("key_insights", []), entry.get("key_insights", []))
+    active["decisions"] = _unique(active.get("decisions", []), entry.get("decisions", []))
+    active["open_threads"] = _unique(active.get("open_threads", []), entry.get("open_threads", []))
+    active["cards_cited"] = _unique(active.get("cards_cited", []), entry.get("cards_cited", []), key=lambda value: str(value).casefold())
+    if entry.get("summary"):
+        active["summary"] = str(entry["summary"])[:4000]
+    if entry.get("mood"):
+        active["mood"] = entry["mood"]
+    active["turns"] = int(active.get("turns", 0)) + max(1, int(entry.get("turns", 1)))
+    active["event_ids"] = _unique(active.get("event_ids", []), [event_id])[-100:]
+    if group_id:
+        active["group_ids"] = _unique(active.get("group_ids", []), [group_id])[-50:]
+    active["last_updated"] = datetime.now().isoformat(timespec="seconds")
+    for key in ("topics", "tags", "key_insights", "decisions", "open_threads", "cards_cited"):
+        active[key] = list(active.get(key, []))[-50:]
+
+    memory_cfg = config.get("memory", {})
+    hot_limit = int(memory_cfg.get("hot_zone_size", memory_cfg.get("hot_limit", 5)))
+    cold_limit = int(memory_cfg.get("cold_zone_size", memory_cfg.get("cold_limit", 45)))
+    while len(hot) > hot_limit:
+        cold.append(_compress_history_entry(hot.pop(0)))
+    if cold_limit >= 0:
+        cold = cold[-cold_limit:] if cold_limit else []
+
+    updated = dict(current)
+    updated["hot"] = hot
+    updated["cold"] = cold
+    updated["active_day"] = active
+    updated["recent_event_ids"] = _unique(recent_ids, [event_id])[-200:]
+    return memory_path, updated, True
+
+
+def build_ambient_update(memory_dir, mood, tags, config, participants=None):
+    path = Path(memory_dir) / "ambient.json"
+    ambient = read_json(path, default={}) or {}
+    if not isinstance(ambient, dict):
+        raise ValueError("ambient.json must contain a JSON object")
+    memory_cfg = config.get("memory", {})
     if mood:
         ambient["recent_mood"] = mood
-        trajectory = ambient.get("mood_trajectory", [])
-        trajectory.append({"mood": mood, "date": today})
-        if len(trajectory) > 3:
-            trajectory = trajectory[-3:]
-        ambient["mood_trajectory"] = trajectory
+        trajectory = list(ambient.get("mood_trajectory", []))
+        if not trajectory or trajectory[-1] != mood:
+            trajectory.append(mood)
+        ambient["mood_trajectory"] = trajectory[-int(memory_cfg.get("mood_trajectory_size", 3)):]
+    attention = dict(ambient.get("recent_attention", {}))
+    decay = float(memory_cfg.get("attention_decay_rate", 0.7))
+    boost = float(memory_cfg.get("attention_boost_rate", 0.3))
+    prune = float(memory_cfg.get("attention_prune_threshold", 0.1))
+    for key in list(attention):
+        attention[key] = round(float(attention[key]) * decay, 4)
+    for tag in tags or []:
+        attention[tag] = round(min(1.0, float(attention.get(tag, 0.0)) + boost), 4)
+    ambient["recent_attention"] = {key: value for key, value in attention.items() if value >= prune}
+    if len(ambient["recent_attention"]) > 100:
+        ranked = sorted(ambient["recent_attention"].items(), key=lambda item: item[1], reverse=True)[:100]
+        ambient["recent_attention"] = dict(ranked)
+    if participants:
+        ambient["recent_personas"] = _unique([], participants)[-10:]
+    ambient["last_saved_at"] = datetime.now().isoformat(timespec="seconds")
+    maximum = int(memory_cfg.get("ambient_max_kb", 64)) * 1024
+    if _json_bytes(ambient) > maximum:
+        raise ValueError("ambient.json exceeds its size limit; summarize the incoming state")
+    return path, ambient
 
-    # Attention: decay existing + boost new tags
-    attention = ambient.get("recent_attention", {})
 
-    for tag in attention:
-        attention[tag] = round(attention[tag] * 0.7, 2)
+def build_shared_update(memory_dir, event_id, state_patch=None, history_event=None, config=None):
+    shared = Path(memory_dir) / "shared"
+    state_path = shared / "state.json"
+    history_path = shared / "history.json"
+    state = read_json(state_path, default={}) or {}
+    history = read_json(history_path, default={}) or {}
+    if not isinstance(state, dict) or not isinstance(history, dict):
+        raise ValueError("Shared state and history must be JSON objects")
+    if not state_patch and not history_event:
+        return [], False
+    processed = list(history.get("recent_event_ids", []))
+    if event_id in processed:
+        return [], False
 
-    if tags:
-        for tag in tags:
-            tag = tag.strip()
-            if tag:
-                attention[tag] = round(min(1.0, attention.get(tag, 0.0) + 0.3), 2)
+    for key, value in (state_patch or {}).items():
+        if isinstance(value, list):
+            state[key] = _unique(state.get(key, []), value)[-100:]
+        elif value is None:
+            state.pop(key, None)
+        else:
+            state[key] = value
+    state["updated_at"] = datetime.now().isoformat(timespec="seconds")
 
-    attention = {k: v for k, v in attention.items() if v >= 0.1}
-    ambient["recent_attention"] = attention
+    hot = list(history.get("hot", []))
+    cold = list(history.get("cold", []))
+    if history_event:
+        event = dict(history_event)
+        event.setdefault("event_id", event_id)
+        event.setdefault("date", _today_str())
+        hot.append(event)
+    memory_cfg = (config or {}).get("memory", {})
+    state_max = int(memory_cfg.get("state_max_kb", 128)) * 1024
+    if _json_bytes(state) > state_max:
+        raise ValueError("shared/state.json exceeds its size limit; remove expired state or summarize it")
+    hot_limit = int(memory_cfg.get("shared_history_hot", 20))
+    cold_limit = int(memory_cfg.get("shared_history_cold", 80))
+    while len(hot) > hot_limit:
+        cold.append(_compress_history_entry(hot.pop(0)))
+    history["hot"] = hot
+    history["cold"] = cold[-cold_limit:] if cold_limit else []
+    history["recent_event_ids"] = _unique(processed, [event_id])[-200:]
+    history_max = int(memory_cfg.get("shared_history_max_kb", 512)) * 1024
+    while _json_bytes(history) > history_max and history["cold"]:
+        history["cold"].pop(0)
+    while _json_bytes(history) > history_max and len(history["hot"]) > 1:
+        history["hot"].pop(0)
+    if _json_bytes(history) > history_max:
+        raise ValueError("shared/history.json exceeds its size limit; summarize the newest event")
+    return [(state_path, state), (history_path, history)], True
 
-    with open(ambient_path, "w", encoding="utf-8") as f:
-        json.dump(ambient, f, ensure_ascii=False, indent=2)
+
+def render_shared_index(memory_dir):
+    shared = Path(memory_dir) / "shared"
+    profile = read_json(shared / "profile.json", default={}) or {}
+    state = read_json(shared / "state.json", default={}) or {}
+    lines = ["# Alaya Shared Memory", ""]
+    if profile:
+        lines.extend(["## User preferences", ""])
+        fields = profile.get("fields", {}) if isinstance(profile.get("fields", {}), dict) else {}
+        for key in ("display_name", "language", "response_style", "long_term_interests"):
+            item = fields.get(key, {}) if isinstance(fields.get(key, {}), dict) else {}
+            if (
+                item.get("value") not in (None, "", [])
+                and item.get("share_scope", "all_personas") == "all_personas"
+                and item.get("status", "confirmed") in ("confirmed", "legacy_preserved")
+            ):
+                lines.append("- %s: %s" % (key, str(item["value"])[:1000]))
+        lines.append("")
+    if state:
+        lines.extend(["## Current shared state", ""])
+        for key, value in state.items():
+            if key != "updated_at" and value not in (None, "", []):
+                lines.append("- %s: %s" % (key, str(value)[:1000]))
+        lines.append("")
+    lines.extend([
+        "## Details",
+        "",
+        "- Profile: `profile.json`",
+        "- Current state: `state.json`",
+        "- Change history: `history.json`",
+        "- Topic notes: `topics/`",
+    ])
+    rendered = "\n".join(lines[:200]) + "\n"
+    if len(rendered.encode("utf-8")) > 25 * 1024:
+        rendered = rendered.encode("utf-8")[:25 * 1024].decode("utf-8", errors="ignore").rstrip() + "\n"
+    return rendered
 
 
-def migrate_from_manas(alaya_dir):
-    """Move history files from manas/ to memory/ (one-time migration). Returns count moved."""
-    manas_dir = os.path.join(alaya_dir, "manas")
-    memory_dir = os.path.join(alaya_dir, "memory")
+def write_history(memory_dir, persona_key, entry, hot_limit=5, cold_limit=45, event_id=None):
+    """Compatibility wrapper: write one semantic event into active_day."""
+    config = {"memory": {"hot_zone_size": hot_limit, "cold_zone_size": cold_limit}}
+    event_id = event_id or stable_event_id(persona_key, entry.get("topic"), entry.get("summary"))
+    path, value, changed = build_private_memory_update(memory_dir, persona_key, entry, config, event_id)
+    if changed:
+        atomic_write_json(path, value)
+    return changed
 
-    if not os.path.exists(manas_dir):
-        return 0
 
-    moved = 0
-    for f in os.listdir(manas_dir):
-        if f.endswith("_history.json"):
-            src = os.path.join(manas_dir, f)
-            dst = os.path.join(memory_dir, f)
-            if not os.path.exists(dst):
-                os.makedirs(memory_dir, exist_ok=True)
-                shutil.move(src, dst)
-                moved += 1
+def update_ambient(memory_dir, mood=None, tags=None, config=None, participants=None):
+    path, value = build_ambient_update(memory_dir, mood, tags, config or {}, participants)
+    atomic_write_json(path, value)
+    return value
 
-    return moved
+
+def migrate_from_manas(_manas_dir, _memory_dir):
+    """Legacy no-op retained for callers; private histories are never auto-moved."""
+    return 0

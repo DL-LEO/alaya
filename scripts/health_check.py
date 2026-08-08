@@ -1,348 +1,263 @@
-# Alaya · Health Check (v2.0)
-# Checks two-layer knowledge network integrity:
-# Layer 1: wiki/index.md links, AUTO markers
-# Layer 2: {cat}_category.md links, card existence, orphans, descriptions
-# Layer 3: Card metadata coverage + description field
-# Layer 4: Memory system (history files, ambient state)
-#
-# Usage: python scripts/health_check.py [wiki_dir] [alaya_dir]
+#!/usr/bin/env python3
+"""Read-only health report for the current Alaya data contract."""
 
-import json, os, re, sys
-from datetime import datetime
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib.yaml_utils import is_category_file, category_file_for
-
-SKIP_FILES = {'index.md', 'log.md'}
-
-
-def _extract_cards_section(content):
-    """Extract only the ## Cards section from a category file.
-
-    Avoids treating [[wiki-links]] in ## Related Categories or other sections
-    as card references during link validation and orphan detection.
-    """
-    cards_start = content.find('## Cards')
-    if cards_start < 0:
-        return ''
-    section = content[cards_start:]
-    # Stop at next ## heading or END-AUTO marker
-    next_boundary = re.search(r'\n## |<!-- END-AUTO -->', section[8:])
-    if next_boundary:
-        section = section[:8 + next_boundary.start()]
-    return section
-
-
-def safe_read_text(filepath):
-    """Read file content safely. Returns (content, None) on success, (None, error_msg) on failure."""
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return f.read(), None
-    except (IOError, OSError) as e:
-        return None, f"Cannot read {filepath}: {e}"
+from lib.link_utils import scan_links  # noqa: E402
+from lib.index_utils import block_status  # noqa: E402
+from lib.runtime import (  # noqa: E402
+    AlayaError,
+    ConfigError,
+    knowledge_paths,
+    load_effective_config,
+    read_json,
+    resolve_kb_root,
+)
+from lib.yaml_utils import (  # noqa: E402
+    category_file_for,
+    description_issue,
+    get_description,
+    get_field,
+    get_field_float,
+    is_knowledge_card,
+    read_frontmatter,
+)
 
 
-def safe_read_json(filepath):
-    """Read JSON file safely. Returns (data, None) on success, (None, error_msg) on failure."""
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f), None
-    except (IOError, OSError) as e:
-        return None, f"Cannot read {filepath}: {e}"
-    except json.JSONDecodeError as e:
-        return None, f"Corrupt JSON in {filepath}: {e}"
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Run a read-only Alaya health check")
+    parser.add_argument("--kb-root", help="Knowledge-base root override")
+    parser.add_argument("--json", action="store_true", dest="json_output")
+    return parser.parse_args(argv)
 
-wiki_dir = sys.argv[1] if len(sys.argv) > 1 else 'wiki'
-alaya_dir = sys.argv[2] if len(sys.argv) > 2 else 'alaya'
 
-print('=' * 50)
-print('  Alaya · Health Check')
-print(f'  {datetime.now().strftime("%Y-%m-%d %H:%M")}')
-print('=' * 50)
+def add(findings, severity, code, message, path=None):
+    item = {"severity": severity, "code": code, "message": message}
+    if path:
+        item["path"] = str(path)
+    findings.append(item)
 
-issues = []
 
-# 1. Persona check
-print(f'\n[1] Persona Configurations')
-manas_dir = os.path.join(alaya_dir, 'manas')
-if os.path.exists(manas_dir):
-    manas_files = [f for f in os.listdir(manas_dir) if f.endswith('.json')]
-    print(f'  Active personas: {len(manas_files)}')
-    for f in manas_files:
-        data, err = safe_read_json(os.path.join(manas_dir, f))
-        if err:
-            issues.append(err)
-            continue
-        name = data.get('persona', f)
-        has_foci = 'interest_foci' in data.get('ego_vector', {})
-        print(f'    {name} — foci={has_foci}')
-else:
-    issues.append('manas/ directory not found')
+def disk_categories(wiki):
+    return [
+        path.name for path in wiki.iterdir()
+        if path.is_dir() and not path.name.startswith(".") and not path.name.startswith("~$")
+    ] if wiki.is_dir() else []
 
-# 2. Layer 1 — index.md checks
-print(f'\n[2] Layer 1: index.md')
-index_path = os.path.join(wiki_dir, 'index.md')
-index_exists = os.path.exists(index_path)
-if index_exists:
-    index_content, err = safe_read_text(index_path)
-    if err:
-        issues.append(err)
-        index_content = ""
 
-    # Check AUTO markers
-    has_auto_start = '<!-- AUTO -->' in index_content
-    has_auto_end = '<!-- END-AUTO -->' in index_content
-    if not has_auto_start or not has_auto_end:
-        issues.append('index.md missing <!-- AUTO --> / <!-- END-AUTO --> markers')
-        print('  AUTO markers: MISSING')
+def index_categories(index_content):
+    return set(re.findall(r"^- \[\[([^/]+)/", index_content, re.MULTILINE))
+
+
+def check_structure(paths, findings, stats):
+    for name in ("alaya", "wiki", "raw", "memory", "manas"):
+        if not paths[name].is_dir():
+            add(findings, "error", "missing_directory", "Required directory is missing", paths[name])
+
+    categories = sorted(disk_categories(paths["wiki"]), key=str.casefold)
+    stats["categories"] = len(categories)
+    index_path = paths["wiki"] / "index.md"
+    if not index_path.is_file():
+        add(findings, "error", "missing_total_index", "wiki/index.md is missing", index_path)
+        indexed = set()
     else:
-        print('  AUTO markers: OK')
+        content = index_path.read_text(encoding="utf-8-sig", errors="replace")
+        status = block_status(content, "AUTO (base)")
+        if status in ("missing", "unpaired"):
+            add(findings, "error", "invalid_base_markers", "Total index needs one paired AUTO (base) block", index_path)
+        elif status == "legacy":
+            add(findings, "info", "legacy_index_markers", "Total index uses compatible legacy AUTO markers", index_path)
+        indexed = index_categories(content)
+    if set(categories) != indexed:
+        add(
+            findings,
+            "error",
+            "category_set_mismatch",
+            "Total-index categories differ from disk categories: disk=%d index=%d" % (len(categories), len(indexed)),
+            index_path,
+        )
 
-    # Extract category links from index.md (v2.0 format: [[cat/cat_category|cat]])
-    cat_links = re.findall(r'\[\[([^/\]]+)/[^\]]*_category[^\]]*\]\]', index_content)
-    missing_cats = []
-    for cat in cat_links:
-        cat_path = os.path.join(wiki_dir, cat)
-        cat_md = os.path.join(cat_path, category_file_for(cat))
-        if not os.path.isdir(cat_path) or not os.path.exists(cat_md):
-            missing_cats.append(cat)
-    if missing_cats:
-        issues.append(f'index.md references missing categories: {missing_cats[:5]}')
-        for c in missing_cats[:5]:
-            print(f'  [broken] index → [[{c}]]')
-    else:
-        print(f'  Category links: {len(cat_links)} OK')
-
-    # Check for orphan categories (exist on disk but not in index.md)
-    orphan_cats = []
-    for entry in sorted(os.listdir(wiki_dir)):
-        cat_path = os.path.join(wiki_dir, entry)
-        if not os.path.isdir(cat_path):
-            continue
-        if not os.path.exists(os.path.join(cat_path, category_file_for(entry))):
-            continue
-        if entry not in cat_links:
-            orphan_cats.append(entry)
-    if orphan_cats:
-        issues.append(f'{len(orphan_cats)} categories not registered in index.md: {orphan_cats}')
-        for c in orphan_cats:
-            print(f'  [orphan_cat] {c}/')
-else:
-    issues.append('wiki/index.md not found — run build_index.py')
-    print('  index.md: NOT FOUND')
-
-# 3. Layer 2 — category file checks
-print(f'\n[3] Layer 2: Category Files')
-all_cards = {}       # card_name -> category
-card_files = set()   # all .md card paths
-orphan_cards = []
-
-if os.path.isdir(wiki_dir):
-    for entry in sorted(os.listdir(wiki_dir)):
-        if entry.startswith('.'):
-            continue
-        cat_path = os.path.join(wiki_dir, entry)
-        if not os.path.isdir(cat_path):
-            continue
-
-        cat_md_path = os.path.join(cat_path, category_file_for(entry))
-        if not os.path.exists(cat_md_path):
-            issues.append(f'Missing category file in: {entry}')
-            print(f'  [missing] {entry}/{category_file_for(entry)}')
-            continue
-
-        cat_content, err = safe_read_text(cat_md_path)
-        if err:
-            issues.append(err)
-            continue
-
-        # Check AUTO markers
-        if '<!-- AUTO -->' not in cat_content or '<!-- END-AUTO -->' not in cat_content:
-            issues.append(f'{entry}/{category_file_for(entry)} missing AUTO markers')
-
-        # Extract card links (only from ## Cards section)
-        cards_section = _extract_cards_section(cat_content)
-        linked_cards = re.findall(r'\[\[([^\]]+?)\]\]', cards_section)
-        broken = []
-        for card in linked_cards:
-            card_file = os.path.join(cat_path, card + '.md')
-            if not os.path.exists(card_file):
-                broken.append(card)
-        if broken:
-            issues.append(f'{entry}/ category file broken links: {broken[:3]}')
-            for b in broken[:3]:
-                print(f'  [broken] {entry}/[[{b}]]')
-
-        # Track all cards in this category
-        for fname in os.listdir(cat_path):
-            if fname.endswith('.md') and fname not in SKIP_FILES and not is_category_file(fname):
-                card_name = fname[:-3]
-                all_cards[card_name] = entry
-                card_files.add(os.path.join(cat_path, fname))
-
-    print(f'  Categories scanned: {len(os.listdir(wiki_dir))}')
-    print(f'  Total cards: {len(all_cards)}')
-
-    # 4. Orphan check
-    print(f'\n[4] Orphan Cards')
-    linked_names = set()
-    for entry in os.listdir(wiki_dir):
-        if entry.startswith('.'):
-            continue
-        cat_path = os.path.join(wiki_dir, entry)
-        if not os.path.isdir(cat_path):
-            continue
-        cat_md_path = os.path.join(cat_path, category_file_for(entry))
-        if not os.path.exists(cat_md_path):
-            continue
-        cat_content, err = safe_read_text(cat_md_path)
-        if err:
-            issues.append(err)
-            continue
-        cards_section = _extract_cards_section(cat_content)
-        for link in re.findall(r'\[\[([^\]]+?)\]\]', cards_section):
-            linked_names.add(link)
-
-    for card_name, cat in all_cards.items():
-        if card_name not in linked_names:
-            orphan_cards.append(f'{cat}/{card_name}')
-
-    if orphan_cards:
-        issues.append(f'{len(orphan_cards)} orphan cards not in category file')
-        for o in orphan_cards[:5]:
-            print(f'  [orphan] {o}')
-    else:
-        print(f'  Orphans: none')
-
-# 5. Metadata coverage
-print(f'\n[5] Metadata Coverage')
-required_fields = ['seed_type', 'strength', 'last_activated', 'description']
-missing_meta = 0
-missing_desc = 0
-if os.path.isdir(wiki_dir):
-    for entry in os.listdir(wiki_dir):
-        if entry.startswith('.'):
-            continue
-        cat_path = os.path.join(wiki_dir, entry)
-        if not os.path.isdir(cat_path):
-            continue
-        for fname in os.listdir(cat_path):
-            if not fname.endswith('.md') or fname in SKIP_FILES or is_category_file(fname):
-                continue
-            fpath = os.path.join(cat_path, fname)
-            content, err = safe_read_text(fpath)
-            if err:
-                issues.append(err)
-                continue
-            for field in required_fields:
-                if f'{field}:' not in content:
-                    if field == 'description':
-                        missing_desc += 1
-                    else:
-                        missing_meta += 1
-                        break
-
-    if missing_meta:
-        issues.append(f'{missing_meta} cards missing required metadata — run build_index.py')
-    if missing_desc:
-        print(f'  Cards missing description: {missing_desc}/{len(all_cards)}')
-    print(f'  Cards with full metadata: {len(all_cards) - missing_meta}/{len(all_cards)}')
-
-# 6. Dirty categories
-print(f'\n[6] Dirty Categories')
-config_path = os.path.join(alaya_dir, 'config.json')
-if os.path.exists(config_path):
-    cfg, err = safe_read_json(config_path)
-    if err:
-        issues.append(err)
-    else:
-        dirty = cfg.get('knowledge', {}).get('dirty_categories', [])
-        if dirty:
-            issues.append(f'{len(dirty)} categories need rebuild: {dirty}')
-            for d in dirty:
-                print(f'  [dirty] {d}')
+    card_count = 0
+    missing_description = 0
+    description_encoding = 0
+    description_content = 0
+    source_broken = 0
+    for category in categories:
+        directory = paths["wiki"] / category
+        category_page = directory / category_file_for(category)
+        if not category_page.is_file():
+            add(findings, "error", "missing_category_index", "Category index is missing", category_page)
         else:
-            print('  None')
-else:
-    issues.append('config.json not found')
+            content = category_page.read_text(encoding="utf-8-sig", errors="replace")
+            status = block_status(content, "AUTO (base)")
+            if status in ("missing", "unpaired"):
+                add(findings, "error", "invalid_base_markers", "Category index needs one paired AUTO (base) block", category_page)
+            elif status == "legacy":
+                add(findings, "info", "legacy_index_markers", "Category index uses compatible legacy AUTO markers", category_page)
+            if block_status(content, "AUTO (refined)") == "unpaired" or block_status(content, "MANUAL") == "unpaired":
+                add(findings, "error", "unpaired_optional_markers", "Optional refined or manual markers are unpaired", category_page)
+        for card in directory.glob("*.md"):
+            if not is_knowledge_card(card):
+                continue
+            card_count += 1
+            result = read_frontmatter(card)
+            if not result:
+                add(findings, "error", "invalid_frontmatter", "Card has no strict YAML frontmatter", card)
+                continue
+            _content, yaml_str, _dash = result
+            strength = get_field_float(yaml_str, "strength")
+            if strength is None or not 0.0 <= strength <= 1.0:
+                add(findings, "warning", "invalid_strength", "Card strength is missing or outside 0..1", card)
+            if not get_description(yaml_str):
+                missing_description += 1
+            issue = description_issue(yaml_str)
+            if issue == "encoding":
+                description_encoding += 1
+            elif issue == "content":
+                description_content += 1
+            source_file = get_field(yaml_str, "source_file")
+            if source_file:
+                if re.match(r"^https?://", source_file, re.IGNORECASE):
+                    add(findings, "info", "legacy_source_url_field", "URL is stored in legacy source_file; keep readable and migrate when edited", card)
+                    continue
+                source_path = Path(source_file)
+                target = source_path if source_path.is_absolute() else paths["root"] / source_path
+                if not target.exists():
+                    source_broken += 1
+    stats["cards"] = card_count
+    stats["cards_missing_description"] = missing_description
+    stats["description_encoding_issues"] = description_encoding
+    stats["description_content_issues"] = description_content
+    stats["broken_source_files"] = source_broken
+    if missing_description:
+        add(findings, "warning", "missing_descriptions", "%d cards lack descriptions" % missing_description)
+    if description_encoding:
+        add(findings, "warning", "description_encoding", "%d descriptions need scalar quoting only; content was not rewritten" % description_encoding)
+    if description_content:
+        add(findings, "warning", "description_content", "%d descriptions contain placeholder or damaged text and need content review" % description_content)
+    if source_broken:
+        add(findings, "warning", "broken_source_files", "%d source_file paths do not exist" % source_broken)
 
-# 7. Version + Config check
-print(f'\n[7] Configuration')
-if os.path.exists(config_path):
-    cfg, err = safe_read_json(config_path)
-    if err:
-        issues.append(err)
-    else:
-        print(f'  Version: {cfg.get("version", "unknown")}')
-        print(f'  Language: {cfg.get("language", "not set")}')
-        # Nested config (v1.8+) or flat (migrated)
-        kcfg = cfg.get('knowledge', {})
-        pcfg = cfg.get('persona', {})
-        mcfg = cfg.get('memory', {})
-        print(f'  Knowledge:')
-        print(f'    top_k: {kcfg.get("top_k", "not set")}')
-        print(f'    dirty_categories: {len(kcfg.get("dirty_categories", []))}')
-        print(f'    sleep_counter: {kcfg.get("sleep_counter", 0)}')
-        print(f'  Memory:')
-        print(f'    version: {mcfg.get("version", "not set")}')
-        print(f'    hot_limit: {mcfg.get("hot_limit", "not set")}')
-        print(f'  Persona:')
-        print(f'    max_cards_per_persona: {pcfg.get("max_cards_per_persona", "not set")}')
-        print(f'    affinity_decay: {pcfg.get("affinity_decay", "not set")}')
 
-# 8. Memory system check
-print(f'\n[8] Memory System')
-memory_dir = os.path.join(alaya_dir, 'memory')
-if os.path.exists(memory_dir):
-    history_files = [f for f in os.listdir(memory_dir) if f.endswith('_history.json')]
-    print(f'  History files: {len(history_files)}')
-    for hf in history_files:
-        hp = os.path.join(memory_dir, hf)
-        hist, err = safe_read_json(hp)
-        if err:
-            issues.append(err)
+def check_personas(paths, config, findings, stats):
+    personas = []
+    for path in paths["manas"].glob("*.json"):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(value, dict):
+                raise ValueError("not an object")
+        except (OSError, ValueError) as exc:
+            add(findings, "error", "invalid_persona", "Persona JSON is invalid: %s" % exc, path)
             continue
-        hot = hist.get('hot', [])
-        cold = hist.get('cold', [])
-        has_mood = any(e.get('mood') for e in hot)
-        print(f'    {hf}: hot={len(hot)}, cold={len(cold)}, mood_tracked={has_mood}')
-    ambient_path = os.path.join(memory_dir, 'ambient.json')
-    if os.path.exists(ambient_path):
-        ambient, err = safe_read_json(ambient_path)
-        if err:
-            issues.append(err)
+        personas.append(path.stem)
+        profile = path.with_name(path.stem + "_profile.md")
+        if not profile.is_file():
+            add(findings, "warning", "missing_profile", "Persona profile is missing", profile)
+    stats["personas"] = len(personas)
+    default = config.get("persona", {}).get("default_persona", "feynman")
+    if not personas:
+        add(findings, "warning", "no_personas", "No personas are installed; retrieval and maintenance remain available")
+    elif default not in personas:
+        add(findings, "error", "missing_default_persona", "Configured default persona does not exist: %s" % default)
+
+
+def check_memory(paths, findings, stats):
+    valid = 0
+    placeholders = 0
+    legacy_group = 0
+    phrases = ("维护完成", "自动保存", "会话结束", "好感已更新", "level 1")
+    for path in paths["memory"].glob("*_history.json"):
+        if "," in path.stem:
+            legacy_group += 1
+        try:
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            add(findings, "error", "invalid_memory", "Memory JSON is invalid: %s" % exc, path)
+            continue
+        valid += 1
+        text = json.dumps(value, ensure_ascii=False).casefold()
+        if any(phrase.casefold() in text for phrase in phrases):
+            placeholders += 1
+    stats["private_memory_files"] = valid
+    stats["legacy_group_history_files"] = legacy_group
+    stats["placeholder_memory_files"] = placeholders
+    if legacy_group:
+        add(findings, "warning", "legacy_group_history", "%d legacy combined-persona history files were found; no automatic migration" % legacy_group)
+    if placeholders:
+        add(findings, "warning", "mechanical_memory_placeholders", "%d history files contain possible mechanical placeholders" % placeholders)
+    root_bi = paths["alaya"] / "bi_notes.json"
+    misplaced_bi = paths["memory"] / "bi_notes.json"
+    if misplaced_bi.exists():
+        add(findings, "warning", "misplaced_bi_notes", "BI observations belong at alaya/bi_notes.json", misplaced_bi)
+    if root_bi.exists() and read_json(root_bi, default=None) is None:
+        add(findings, "error", "invalid_bi_notes", "BI notes JSON is invalid", root_bi)
+
+
+def check_config(paths, findings, stats):
+    raw = read_json(paths["config"], default=None)
+    if not isinstance(raw, dict):
+        add(findings, "error", "invalid_config", "config.json is missing or invalid", paths["config"])
+        return None
+    try:
+        effective = load_effective_config(paths["root"])
+    except ConfigError as exc:
+        add(findings, "error", "invalid_config_value", str(exc), paths["config"])
+        return None
+    stats["config_version"] = raw.get("version", "unknown")
+    aliases = []
+    memory = raw.get("memory", {}) if isinstance(raw.get("memory", {}), dict) else {}
+    if "hot_limit" in memory and "hot_zone_size" not in memory:
+        aliases.append("memory.hot_limit -> memory.hot_zone_size")
+    if "cold_limit" in memory and "cold_zone_size" not in memory:
+        aliases.append("memory.cold_limit -> memory.cold_zone_size")
+    stats["legacy_config_aliases"] = aliases
+    stats["effective_cold_after_days"] = effective["knowledge"]["cold_after_days_default"]
+    stats["effective_default_persona"] = effective["persona"]["default_persona"]
+    return effective
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        root = resolve_kb_root(args.kb_root)
+        paths = knowledge_paths(root)
+        findings = []
+        stats = {"kb_root": str(root)}
+        config = check_config(paths, findings, stats)
+        check_structure(paths, findings, stats)
+        if config:
+            check_personas(paths, config, findings, stats)
+        check_memory(paths, findings, stats)
+        link_total, link_findings = scan_links(paths["wiki"])
+        stats["links"] = link_total
+        stats["broken_links"] = sum(item["status"] == "broken" for item in link_findings)
+        stats["ambiguous_links"] = sum(item["status"] == "ambiguous" for item in link_findings)
+        if link_findings:
+            add(findings, "warning", "link_findings", "%d links need review" % len(link_findings))
+        actionable = any(item["severity"] in ("warning", "error") for item in findings)
+        report = {"status": "findings" if actionable else ("info" if findings else "pass"), "stats": stats, "findings": findings}
+        if args.json_output:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
         else:
-            mood = ambient.get("recent_mood", "")
-            attention = len(ambient.get("recent_attention", {}))
-            trajectory = len(ambient.get("mood_trajectory", []))
-            themes = ambient.get("recent_themes", "")
-            threads = len(ambient.get("open_threads", []))
-            style = ambient.get("user_style_notes", "")
-            print(f'  Ambient: mood="{mood}", trajectory={trajectory}, attention={attention}')
-            print(f'    themes={bool(themes)}, open_threads={threads}, style_notes={bool(style)}')
+            print("Alaya health check (read-only)")
+            for key, value in stats.items():
+                print("  %s: %s" % (key, value))
+            for item in findings:
+                suffix = " (%s)" % item["path"] if item.get("path") else ""
+                print("[%s] %s: %s%s" % (item["severity"].upper(), item["code"], item["message"], suffix))
+            if not findings:
+                print("[OK] No findings.")
+        return 1 if actionable else 0
+    except (AlayaError, OSError, ValueError) as exc:
+        print("[ERROR] %s" % exc, file=sys.stderr)
+        return 2
 
-            # Check for old-format ambient (missing semantic fields)
-            missing_fields = []
-            for field in ['mood_trajectory', 'recent_themes', 'open_threads', 'user_style_notes']:
-                if field not in ambient:
-                    missing_fields.append(field)
-            if missing_fields:
-                issues.append(f'ambient.json missing fields: {missing_fields} — LLM will auto-init on first save')
-                for mf in missing_fields:
-                    print(f'  [upgrade] ambient.json missing field: {mf}')
-    else:
-        print(f'  Ambient: not found')
-else:
-    print(f'  memory/ directory not found (will be created on first interaction)')
 
-# Summary
-print(f'\n' + '=' * 50)
-if issues:
-    print(f'  Issues found: {len(issues)}')
-    for i, issue in enumerate(issues, 1):
-        print(f'  {i}. {issue}')
-    print('  Run "build index" to fix index-related issues.')
-else:
-    print('  All checks passed!')
-print('=' * 50)
-sys.exit(1 if issues else 0)
+if __name__ == "__main__":
+    sys.exit(main())

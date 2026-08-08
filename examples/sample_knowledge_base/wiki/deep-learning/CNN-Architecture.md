@@ -8,7 +8,6 @@ created_by: system
 strength: 0.6
 last_activated: 2026-06-02
 activation_count: 0
-half_life: 30
 description: "卷积神经网络通过局部感受野和权重共享实现高效的特征提取，是计算机视觉领域的核心架构。"
 ---
 

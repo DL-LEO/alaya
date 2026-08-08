@@ -1,78 +1,78 @@
-# Alaya · Fix Links
-# Detects and fixes broken [[wiki-links]] in knowledge cards (case-insensitive matching).
-# Usage: python scripts/fix_links.py [wiki_dir]
+#!/usr/bin/env python3
+"""Read-only by default wiki-link checker with explicit safe application."""
 
-import os, sys, re
+import argparse
+import json
+import os
+import sys
+from collections import defaultdict
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib.yaml_utils import is_category_file
-
-wiki_dir = sys.argv[1] if len(sys.argv) > 1 else "wiki"
-
-if not os.path.exists(wiki_dir):
-    print(f"Directory not found: {wiki_dir}")
-    sys.exit(1)
-
-# Build card name index (case-insensitive) from category subfolders
-card_names = {}
-for root, dirs, files in os.walk(wiki_dir):
-    for fname in files:
-        if fname.endswith(".md") and not fname.startswith("~$") and fname != "index.md" and fname != "log.md" and not is_category_file(fname):
-            name = fname.replace(".md", "")
-            card_names[name.lower()] = name
-
-fixed_count = 0
-broken_links = []
+from lib.link_utils import scan_links  # noqa: E402
+from lib.runtime import AlayaError, atomic_write_text, knowledge_paths, resolve_kb_root  # noqa: E402
 
 
-def make_fix_link(file_card_names):
-    count = [0]
-    file_broken = []
-
-    def fix_link(match):
-        link = match.group(1)
-        link_clean = link.split("|")[0].split("#")[0].strip()
-
-        # Check if link target exists as-is (O(1) dict lookup)
-        lower_link = link_clean.lower()
-        if lower_link in file_card_names and file_card_names[lower_link] == link_clean:
-            return match.group(0)
-
-        # Try case-insensitive match
-        if lower_link in file_card_names and file_card_names[lower_link] != link_clean:
-            new_link = link.replace(link_clean, file_card_names[lower_link])
-            count[0] += 1
-            print(f"  Fixed: [[{link}]] -> [[{file_card_names[lower_link]}]]")
-            return "[[" + new_link + "]]"
-
-        file_broken.append(link_clean)
-        return match.group(0)
-
-    return fix_link, count, file_broken
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Check Alaya wiki links")
+    parser.add_argument("--kb-root", help="Knowledge-base root override")
+    parser.add_argument("--apply", action="store_true", help="Apply only unambiguous case corrections")
+    parser.add_argument("--json", action="store_true", dest="json_output")
+    return parser.parse_args(argv)
 
 
-for root, dirs, files in os.walk(wiki_dir):
-    for fname in files:
-        if not fname.endswith(".md") or fname.startswith("~$") or fname == "index.md" or fname == "log.md" or is_category_file(fname):
-            continue
+def apply_case_fixes(findings):
+    grouped = defaultdict(list)
+    for finding in findings:
+        if finding["status"] == "case_mismatch":
+            grouped[finding["file"]].append(finding)
+    changed = 0
+    for filename, items in grouped.items():
+        path = Path(filename)
+        content = path.read_text(encoding="utf-8-sig")
+        for item in sorted(items, key=lambda value: value["start"], reverse=True):
+            content = content[:item["start"]] + item["replacement"] + content[item["end"]:]
+            changed += 1
+        atomic_write_text(path, content)
+    return changed
 
-        fpath = os.path.join(root, fname)
-        with open(fpath, "r", encoding="utf-8") as f:
-            content = f.read()
 
-        fix_link, count, file_broken = make_fix_link(card_names)
-        new_content = re.sub(r'\[\[([^\]]+?)\]\]', fix_link, content)
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        root = resolve_kb_root(args.kb_root)
+        paths = knowledge_paths(root)
+        total, findings = scan_links(paths["wiki"])
+        if args.apply:
+            fixed = apply_case_fixes(findings)
+            total, findings = scan_links(paths["wiki"])
+        else:
+            fixed = 0
+        summary = {
+            "links_scanned": total,
+            "case_fixes_applied": fixed,
+            "case_mismatch": sum(item["status"] == "case_mismatch" for item in findings),
+            "broken": sum(item["status"] == "broken" for item in findings),
+            "ambiguous": sum(item["status"] == "ambiguous" for item in findings),
+            "findings": findings,
+        }
+        if args.json_output:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            print("Links scanned: %d" % total)
+            print("Case corrections applied: %d" % fixed)
+            print("Remaining case mismatch: %d" % summary["case_mismatch"])
+            print("Broken links: %d" % summary["broken"])
+            print("Ambiguous links: %d" % summary["ambiguous"])
+            for item in findings[:20]:
+                print("  [%s] %s -> [[%s]]" % (item["status"], item["file"], item["raw"]))
+            if not args.apply and summary["case_mismatch"]:
+                print("Re-run with --apply to correct only the unambiguous case mismatches.")
+        return 1 if findings else 0
+    except (AlayaError, OSError, ValueError) as exc:
+        print("[ERROR] %s" % exc, file=sys.stderr)
+        return 2
 
-        if new_content != content:
-            with open(fpath, "w", encoding="utf-8") as f:
-                f.write(new_content)
 
-        fixed_count += count[0]
-        broken_links.extend(file_broken)
-
-print(f"Links fixed (case-mismatch): {fixed_count}")
-print(f"Broken links remaining: {len(broken_links)}")
-if broken_links:
-    print("First 10 broken links:")
-    for link in broken_links[:10]:
-        print(f"  [[{link}]]")
+if __name__ == "__main__":
+    sys.exit(main())

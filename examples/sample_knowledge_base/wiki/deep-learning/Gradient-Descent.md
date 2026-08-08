@@ -8,7 +8,6 @@ created_by: system
 strength: 0.5
 last_activated: 2026-06-02
 activation_count: 0
-half_life: 30
 description: "梯度下降是最基础的优化算法，通过沿梯度反方向迭代更新参数以最小化损失函数。"
 ---
 
